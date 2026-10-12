@@ -1,114 +1,223 @@
 #!/usr/bin/env bash
 # reference-analyzer 手動コマンド
 #
-#   ref <PDFファイル...>   指定したPDFを処理する（移動せず，その場で改名する）
-#   ref <フォルダ>         フォルダ直下の *.pdf を処理する（再帰しない）
-#   ref <URL...>           Webページ・GitHubリポジトリ等を処理する
+#   ref <対象>                        対象を1つ処理する（PDFファイル または URL）
+#   ref <対象> --with <補助資料...>   同じ文献を補助する資料を添えて処理する
 #
-# 引数は混在してよい．同時処理数は PAPER_PARALLEL（既定2）に従う．
-# 自動経路（inbox）とは別の経路であり，処理本体は lib/manual_one.sh にある．
+# 1コマンド = 1文献 = AI プロセス1回 = Notion 1ページ．
+# 補助資料はファイル・フォルダ・URL を混在できる．フォルダは展開せず，
+# 同じ文献を補助する資料としてまとめて1度の AI プロセスに渡す（順次処理しない）．
 #
-# macOS 標準の bash 3.2 で動くように書いている（wait -n 等は使わない）．
+# 対象がPDFの場合，成功するとそのPDFを Citation Key に改名する．移動はしない．
+# 失敗した場合は元のファイルに一切触らない．
+#
+# macOS 標準の bash 3.2 で動くように書いている．
 set -euo pipefail
 
-RA_REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-. "$RA_REPO_ROOT/lib/core.sh"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$REPO_ROOT/lib/core.sh"
 
 usage() {
-  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
 }
-
-if [ "$#" -eq 0 ]; then
-  usage >&2
-  exit 2
-fi
 
 case "${1:-}" in
-  -h|--help|help) usage; exit 0 ;;
+  ''|-h|--help|help) usage; exit "$([ -z "${1:-}" ] && echo 2 || echo 0)" ;;
 esac
 
-ra_load_env || exit 1
+# ---------------------------------------------------------------- 引数
 
-# ---------------------------------------------------------------- 対象の列挙
+TARGET="$1"; shift
 
-RA_MODES=()
-RA_TARGETS=()
-
-add_task() {  # <mode> <target>
-  RA_MODES[${#RA_MODES[@]}]="$1"
-  RA_TARGETS[${#RA_TARGETS[@]}]="$2"
-}
-
-add_dir() {  # <フォルダ>
-  local dir="$1" found=0 f
-  # 直下のみ（再帰しない）．隠しファイルと iCloud のプレースホルダーは除く．
-  while IFS= read -r -d '' f; do
-    case "$(basename "$f")" in
-      .*) continue ;;
-      *.icloud) continue ;;
-    esac
-    add_task file "$f"
-    found=$((found + 1))
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f \
-             \( -iname '*.pdf' \) -print0 2>/dev/null | sort -z)
-  if [ "$found" -eq 0 ]; then
-    echo "警告: PDF が見つからない（直下のみ探索）: $dir" >&2
+AUX_ARGS=()
+if [ "$#" -gt 0 ]; then
+  if [ "$1" != "--with" ]; then
+    echo "対象は1つだけ指定せよ: $1" >&2
+    echo "補助資料を添える場合は --with を使う:  ref <対象> --with <補助資料...>" >&2
+    echo "（2本の文献を登録したい場合は ref を2回実行せよ．" >&2
+    echo "  --with を省くと，2本目が1本目の補助資料として同じページに混ざる）" >&2
+    exit 2
   fi
+  shift
+  if [ "$#" -eq 0 ]; then
+    echo "--with の後に補助資料を1つ以上指定せよ" >&2
+    exit 2
+  fi
+  while [ "$#" -gt 0 ]; do
+    AUX_ARGS[${#AUX_ARGS[@]}]="$1"
+    shift
+  done
+fi
+
+load_env || exit 1
+
+# ---------------------------------------------------------------- 対象の判別
+
+case "$TARGET" in
+  http://*|https://*)
+    TARGET_KIND=url
+    TARGET_LABEL="$TARGET"
+    ;;
+  *)
+    if [ ! -f "$TARGET" ]; then
+      echo "ファイルが見つからない: $TARGET" >&2
+      exit 2
+    fi
+    case "$(printf '%s' "$TARGET" | tr 'A-Z' 'a-z')" in
+      *.pdf) ;;
+      *) echo "PDF ではない: $TARGET" >&2; exit 2 ;;
+    esac
+    TARGET_KIND=file
+    TARGET_PATH="$(cd "$(dirname "$TARGET")" && pwd)/$(basename "$TARGET")"
+    TARGET_LABEL="$(basename "$TARGET_PATH")"
+    ;;
+esac
+
+# ---------------------------------------------------------------- 補助資料の検査
+
+# 作業ディレクトリへコピーするため，巨大なフォルダを指定された場合は
+# AI を起動する前に中止する（利用量を消費しない）．
+AUX_FILES=()      # コピーするローカルのパス
+AUX_URLS=()       # プロンプトに列挙する URL
+AUX_BYTES=0
+AUX_COUNT=0
+
+add_aux_file() {  # <ファイルのパス>
+  local f="$1" sz
+  sz="$(stat -f '%z' "$f" 2>/dev/null || echo 0)"
+  AUX_FILES[${#AUX_FILES[@]}]="$f"
+  AUX_BYTES=$((AUX_BYTES + sz))
+  AUX_COUNT=$((AUX_COUNT + 1))
 }
 
-for arg in "$@"; do
-  case "$arg" in
+for a in ${AUX_ARGS[@]+"${AUX_ARGS[@]}"}; do
+  case "$a" in
     http://*|https://*)
-      add_task url "$arg"
+      AUX_URLS[${#AUX_URLS[@]}]="$a"
       ;;
     *)
-      if [ -d "$arg" ]; then
-        add_dir "$arg"
-      elif [ -f "$arg" ]; then
-        add_task file "$arg"
+      if [ -d "$a" ]; then
+        while IFS= read -r -d '' f; do
+          case "$(basename "$f")" in .*) continue ;; esac
+          add_aux_file "$f"
+        done < <(find "$a" -type f -print0 2>/dev/null | sort -z)
+      elif [ -f "$a" ]; then
+        add_aux_file "$a"
       else
-        echo "対象が見つからない: $arg" >&2
+        echo "補助資料が見つからない: $a" >&2
         exit 2
       fi
       ;;
   esac
 done
 
-RA_COUNT="${#RA_TARGETS[@]}"
-if [ "$RA_COUNT" -eq 0 ]; then
-  echo "処理する対象が無い" >&2
+if [ "$AUX_COUNT" -gt "$PAPER_AUX_MAX_FILES" ]; then
+  echo "補助資料が多すぎる: ${AUX_COUNT} ファイル（上限 ${PAPER_AUX_MAX_FILES}）" >&2
+  echo "PAPER_AUX_MAX_FILES で変更できる" >&2
+  exit 2
+fi
+if [ "$AUX_BYTES" -gt "$PAPER_AUX_MAX_BYTES" ]; then
+  echo "補助資料が大きすぎる: $((AUX_BYTES / 1048576))MB（上限 $((PAPER_AUX_MAX_BYTES / 1048576))MB）" >&2
+  echo "PAPER_AUX_MAX_BYTES で変更できる" >&2
   exit 2
 fi
 
-echo "対象 $RA_COUNT 件を処理する（同時 $PAPER_PARALLEL 件，エンジン ${PAPER_ENGINE}）"
+# ---------------------------------------------------------------- プロンプトの記述
+
+if [ "$TARGET_KIND" = url ]; then
+  TARGET_DESC="$(printf '%s\n' \
+    "- 種別: URL（Webページ・GitHubリポジトリ等）" \
+    "- URL: $TARGET" \
+    "" \
+    "このURLの資料のみを処理せよ．改名・保存するファイルは無い．")"
+else
+  TARGET_DESC="$(printf '%s\n' \
+    "- 種別: PDFファイル" \
+    "- ファイル: ./$TARGET_LABEL" \
+    "- このファイルは作業ディレクトリ内のコピーである．" \
+    "" \
+    "この1本を対象として処理せよ．")"
+fi
+
+AUX_DESC=""
+if [ "$AUX_COUNT" -gt 0 ] || [ "${#AUX_URLS[@]}" -gt 0 ]; then
+  for f in ${AUX_FILES[@]+"${AUX_FILES[@]}"}; do
+    AUX_DESC="${AUX_DESC}- ./aux/$(basename "$f")"$'\n'
+  done
+  for u in ${AUX_URLS[@]+"${AUX_URLS[@]}"}; do
+    AUX_DESC="${AUX_DESC}- URL: ${u}"$'\n'
+  done
+fi
+
+# ---------------------------------------------------------------- 経路ごとの2つの関数
+
+LOCK_PATH=""
+cleanup_on_exit() {
+  release_slot 2>/dev/null || true
+  [ -n "$LOCK_PATH" ] && release_lock "$LOCK_PATH"
+}
+trap cleanup_on_exit EXIT
+
+# 対象はコピーだけを AI に見せ，原本には触れさせない．
+# 補助資料は aux/ にまとめ，どれが対象かパスで分かるようにする．
+prepare_target() {
+  local f dest
+  if [ "$TARGET_KIND" = file ]; then
+    cp "$TARGET_PATH" "$WORK_DIR/$TARGET_LABEL" || return 1
+    log_msg "作業ディレクトリへコピーした: $TARGET_LABEL"
+  fi
+  if [ "$AUX_COUNT" -gt 0 ]; then
+    mkdir -p "$WORK_DIR/aux"
+    for f in ${AUX_FILES[@]+"${AUX_FILES[@]}"}; do
+      dest="$WORK_DIR/aux/$(basename "$f")"
+      cp "$f" "$dest" 2>/dev/null || log_msg "警告: 補助資料をコピーできなかった: $f"
+    done
+    log_msg "補助資料をコピーした: ${AUX_COUNT} ファイル（$((AUX_BYTES / 1024))KB）"
+  fi
+  [ "${#AUX_URLS[@]}" -gt 0 ] && log_msg "補助資料のURL: ${#AUX_URLS[@]} 件"
+  return 0
+}
+
+# 成功した場合のみ，原本をその場で改名する（移動はしない）．
+# 失敗した場合は原本に触らない．
+place_result() {  # <成功なら1>
+  local ok="$1" dest
+  PLACEMENT=""
+  if [ "$ok" != "1" ] || [ "$TARGET_KIND" != file ]; then
+    [ "$TARGET_KIND" = url ] && PLACEMENT="（URLのためファイルなし）"
+    return 0
+  fi
+  if dest="$(rename_to_key "$TARGET_PATH" "$CITATION_KEY")"; then
+    PLACEMENT="$(basename "$dest")（$(dirname "$dest") に据え置き）"
+    FINAL_PATH="$dest"
+    return 0
+  fi
+  ERROR_MESSAGE="Notion 登録は成功したが，改名に失敗した（元: ${TARGET_PATH}）"
+  return 1
+}
 
 # ---------------------------------------------------------------- 実行
 
-running_count() { jobs -pr 2>/dev/null | wc -l | tr -d ' '; }
+# 同じ資料への多重実行を弾く（原本を移動しないため mv による確保ができない）
+LOCK_PATH="$(target_lock_path "$TARGET_KIND" "${TARGET_PATH:-$TARGET}")"
+if ! acquire_lock "$LOCK_PATH" 5; then
+  echo "この資料は既に処理中である: $TARGET_LABEL" >&2
+  LOCK_PATH=""
+  exit 1
+fi
 
-RA_FAILED=0
-RA_PIDS=""
+cleanup_old_records || true
 
-i=0
-while [ "$i" -lt "$RA_COUNT" ]; do
-  while [ "$(running_count)" -ge "$PAPER_PARALLEL" ]; do
-    sleep 0.3
-  done
-  "$RA_REPO_ROOT/lib/manual_one.sh" "${RA_MODES[$i]}" "${RA_TARGETS[$i]}" &
-  RA_PIDS="$RA_PIDS $!"
-  i=$((i + 1))
-done
-
-for pid in $RA_PIDS; do
-  if ! wait "$pid"; then
-    RA_FAILED=$((RA_FAILED + 1))
-  fi
-done
-
-echo "---"
-if [ "$RA_FAILED" -eq 0 ]; then
-  echo "完了: $RA_COUNT 件すべて成功した"
+FINAL_PATH=""
+if run_one; then
+  echo "成功: ${TITLE}"
+  echo "  Citation Key : ${CITATION_KEY}"
+  echo "  Notion       : ${NOTION_URL}"
+  [ -n "$FINAL_PATH" ] && echo "  ファイル     : ${FINAL_PATH}"
   exit 0
 fi
-echo "完了: $RA_COUNT 件のうち $RA_FAILED 件が失敗した（詳細は Slack 通知とログを確認せよ）" >&2
+
+echo "失敗: ${ERROR_MESSAGE:-不明}" >&2
+[ "$TARGET_KIND" = file ] && echo "  元ファイルは変更していない: ${TARGET_PATH}" >&2
+echo "  ログ: ${RECORD_DIR}" >&2
 exit 1

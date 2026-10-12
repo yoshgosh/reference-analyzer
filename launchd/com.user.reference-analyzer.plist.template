@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  reference-analyzer: inbox の変化を検知して auto_queue.sh を起動する．
+  reference-analyzer: inbox の変化を検知して scan_inbox.sh を起動する．
 
   プレースホルダーは launchd/install.sh が置換する．
   launchd は対話シェルの環境を引き継がないため，PATH を明示する（§8.3）．
@@ -15,7 +15,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>{{REPO_ROOT}}/lib/auto_queue.sh</string>
+        <string>{{REPO_ROOT}}/lib/scan_inbox.sh</string>
     </array>
 
     <!-- inbox の変化で起動する．launchd は同じジョブを二重に起動しない -->

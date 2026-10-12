@@ -10,14 +10,14 @@
 # 場所が記録される．Node を入れ替えた場合は再導入が必要である（status で検出できる）．
 set -euo pipefail
 
-RA_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-. "$RA_REPO_ROOT/lib/core.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$REPO_ROOT/lib/core.sh"
 
 LABEL="com.user.reference-analyzer"
 PLIST_DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
-TEMPLATE="$RA_REPO_ROOT/launchd/com.user.reference-analyzer.plist.template"
+TEMPLATE="$REPO_ROOT/launchd/com.user.reference-analyzer.plist.template"
 
-ra_load_env || exit 1
+load_env || exit 1
 
 preflight() {
   local ok=0
@@ -61,8 +61,8 @@ do_install() {
   claude_dir="$(dirname "$(command -v claude)")"
   path_value="$claude_dir:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-  ra_py - "$TEMPLATE" "$PLIST_DEST" \
-    "$LABEL" "$RA_REPO_ROOT" "$PAPER_INBOX_DIR" "$PAPER_LOG_DIR" "$path_value" "$HOME" <<'PYEOF'
+  py - "$TEMPLATE" "$PLIST_DEST" \
+    "$LABEL" "$REPO_ROOT" "$PAPER_INBOX_DIR" "$PAPER_LOG_DIR" "$path_value" "$HOME" <<'PYEOF'
 import sys
 tpl, dest, label, repo, inbox, logdir, pathv, home = sys.argv[1:9]
 s = open(tpl, encoding="utf-8").read()
@@ -107,7 +107,7 @@ do_status() {
   # 導入時に埋め込んだ claude のパスが今も有効かを確認する
   if [ -f "$PLIST_DEST" ]; then
     local embedded
-    embedded="$(ra_py -c '
+    embedded="$(py -c '
 import plistlib, sys
 d = plistlib.load(open(sys.argv[1], "rb"))
 sys.stdout.write(d.get("EnvironmentVariables", {}).get("PATH", ""))
