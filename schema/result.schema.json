@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "status": { "type": "string", "enum": ["success", "failed"] },
+    "citation_key": { "type": "string" },
+    "title": { "type": "string" },
+    "notion_url": { "type": "string" },
+    "rating": { "type": "string" },
+    "rating_reason": { "type": "string" },
+    "image_status": { "type": "string" },
+    "error": { "type": "string" }
+  },
+  "required": ["status", "citation_key", "title", "notion_url", "rating", "rating_reason", "image_status", "error"],
+  "additionalProperties": false
+}

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  reference-analyzer: inbox の変化を検知して auto_queue.sh を起動する．
+
+  プレースホルダーは launchd/install.sh が置換する．
+  launchd は対話シェルの環境を引き継がないため，PATH を明示する（§8.3）．
+  .env はスクリプト側（lib/core.sh）で読み込む．
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{LABEL}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>{{REPO_ROOT}}/lib/auto_queue.sh</string>
+    </array>
+
+    <!-- inbox の変化で起動する．launchd は同じジョブを二重に起動しない -->
+    <key>WatchPaths</key>
+    <array>
+        <string>{{INBOX_DIR}}</string>
+    </array>
+
+    <!-- 読み込み時にも一度走らせ，停止中に置かれたPDFを取りこぼさない -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 連続した発火を間引く（秒） -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{{PATH_VALUE}}</string>
+        <key>HOME</key>
+        <string>{{HOME_DIR}}</string>
+        <key>LANG</key>
+        <string>ja_JP.UTF-8</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/launchd.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

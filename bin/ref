@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# reference-analyzer 手動コマンド
+#
+#   ref <PDFファイル...>   指定したPDFを処理する（移動せず，その場で改名する）
+#   ref <フォルダ>         フォルダ直下の *.pdf を処理する（再帰しない）
+#   ref <URL...>           Webページ・GitHubリポジトリ等を処理する
+#
+# 引数は混在してよい．同時処理数は PAPER_PARALLEL（既定2）に従う．
+# 自動経路（inbox）とは別の経路であり，処理本体は lib/manual_one.sh にある．
+#
+# macOS 標準の bash 3.2 で動くように書いている（wait -n 等は使わない）．
+set -euo pipefail
+
+RA_REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$RA_REPO_ROOT/lib/core.sh"
+
+usage() {
+  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+if [ "$#" -eq 0 ]; then
+  usage >&2
+  exit 2
+fi
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+esac
+
+ra_load_env || exit 1
+
+# ---------------------------------------------------------------- 対象の列挙
+
+RA_MODES=()
+RA_TARGETS=()
+
+add_task() {  # <mode> <target>
+  RA_MODES[${#RA_MODES[@]}]="$1"
+  RA_TARGETS[${#RA_TARGETS[@]}]="$2"
+}
+
+add_dir() {  # <フォルダ>
+  local dir="$1" found=0 f
+  # 直下のみ（再帰しない）．隠しファイルと iCloud のプレースホルダーは除く．
+  while IFS= read -r -d '' f; do
+    case "$(basename "$f")" in
+      .*) continue ;;
+      *.icloud) continue ;;
+    esac
+    add_task file "$f"
+    found=$((found + 1))
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f \
+             \( -iname '*.pdf' \) -print0 2>/dev/null | sort -z)
+  if [ "$found" -eq 0 ]; then
+    echo "警告: PDF が見つからない（直下のみ探索）: $dir" >&2
+  fi
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    http://*|https://*)
+      add_task url "$arg"
+      ;;
+    *)
+      if [ -d "$arg" ]; then
+        add_dir "$arg"
+      elif [ -f "$arg" ]; then
+        add_task file "$arg"
+      else
+        echo "対象が見つからない: $arg" >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+
+RA_COUNT="${#RA_TARGETS[@]}"
+if [ "$RA_COUNT" -eq 0 ]; then
+  echo "処理する対象が無い" >&2
+  exit 2
+fi
+
+echo "対象 $RA_COUNT 件を処理する（同時 $PAPER_PARALLEL 件，エンジン ${PAPER_ENGINE}）"
+
+# ---------------------------------------------------------------- 実行
+
+running_count() { jobs -pr 2>/dev/null | wc -l | tr -d ' '; }
+
+RA_FAILED=0
+RA_PIDS=""
+
+i=0
+while [ "$i" -lt "$RA_COUNT" ]; do
+  while [ "$(running_count)" -ge "$PAPER_PARALLEL" ]; do
+    sleep 0.3
+  done
+  "$RA_REPO_ROOT/lib/manual_one.sh" "${RA_MODES[$i]}" "${RA_TARGETS[$i]}" &
+  RA_PIDS="$RA_PIDS $!"
+  i=$((i + 1))
+done
+
+for pid in $RA_PIDS; do
+  if ! wait "$pid"; then
+    RA_FAILED=$((RA_FAILED + 1))
+  fi
+done
+
+echo "---"
+if [ "$RA_FAILED" -eq 0 ]; then
+  echo "完了: $RA_COUNT 件すべて成功した"
+  exit 0
+fi
+echo "完了: $RA_COUNT 件のうち $RA_FAILED 件が失敗した（詳細は Slack 通知とログを確認せよ）" >&2
+exit 1
