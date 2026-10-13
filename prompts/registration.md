@@ -62,14 +62,29 @@
 ### Tag
 
 - 資料内容に最も関連するタグを選択（複数可）。
+- 既存タグの一覧は固定ではない。**`notion-fetch` で `collection://{{NOTION_DATA_SOURCE_ID}}` を取得し、`Tag` の現在の選択肢を確認してから選ぶ。**
+- 既存タグで分類できない場合は、新しいタグを適切な色で追加する（**ユーザー承認不要**）。色は資料の分野に応じて選ぶ。
 
-**既存タグ一覧:**
+#### 新しいタグを追加する手順
+
+未登録の値のままページを作成しようとすると、**400（validation_error）で拒否される**。
+そのため、`notion-create-pages` を呼ぶ**前に**選択肢を追加しなければならない。
+
+1. `notion-fetch` で `collection://{{NOTION_DATA_SOURCE_ID}}` を取得し、`Tag` の現在の選択肢をすべて書き出す。
+2. `notion-update-data-source` を呼ぶ。
 
 ```
-llm, ui, agent, branch, merge, visualization, suggestion, optimization
+data_source_id: {{NOTION_DATA_SOURCE_ID}}
+statements: ALTER COLUMN "Tag" SET MULTI_SELECT('既存1':blue, '既存2':green, …, '新規':色)
 ```
 
-適切なタグが不足する場合は、**新しいタグを適切な色で追加**する（ユーザー承認不要）。
+3. その後で `notion-create-pages` を呼ぶ。
+
+**`SET MULTI_SELECT(...)` は全置換である。** 手順1で得た既存の選択肢を**すべて列挙した上に**
+新しいものを足すこと。既存の選択肢を省くと、**それらがデータベースから削除される**。
+新しいタグだけを渡してはならない。
+
+使える色：`blue` `green` `purple` `orange` `yellow` `pink` `gray` `red` `brown` `default`
 
 ### Author（著者・公開者）
 
@@ -232,11 +247,6 @@ Favoriteは特に指定がない限り、**チェックなし**で登録する�
 - 資料から情報が見つからない場合はWeb検索で調査する
 - 該当しない書誌項目は空欄とし、確認できない情報を推測で補わない
 - 著者の所属が不明な場合はWeb検索で調査し、それでも不明なら「所属不明」
-
-### タグ管理
-
-- 既存タグで分類できない場合は新タグを適切な色で追加（**ユーザー承認不要**）
-- カラーは資料の分野に応じて選択
 
 ### 実行ルール
 
