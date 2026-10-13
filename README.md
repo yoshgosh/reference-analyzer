@@ -1,370 +1,170 @@
 # reference-analyzer
 
-論文PDF・Webページを読解して要約し，Notion の References データベースへ登録する．
-処理済みPDFは Citation Key に改名し，結果を Slack へ通知する．
+論文PDFまたはWebページを AI に読解させ，要約と書誌情報を Notion のデータベースへ
+登録する．PDFは Citation Key に改名し，結果を Slack に通知する．macOS 専用．
 
-**動作の正本は本書とコードである．** 当初の仕様書（`HANDOVER.md`）は内容を本書へ移して
-削除した．実装にあたって変更した点は「仕様からの変更」に記す．
+```
+inbox に PDF を置く ──┐
+                       ├──▶ AI が読解・要約・Notion登録 ──┬──▶ Notion に1ページ
+ref <PDF|URL> ────────┘                                   ├──▶ PDF を <CitationKey>.pdf に改名
+                                                           └──▶ Slack に通知
+```
 
-## 現状
+**1コマンド = 1文献 = AIプロセス1回 = Notionページ1つ**である．
 
-| 段階 | 内容 | 状態 |
+内部の作りと設計の理由は [DESIGN.md](DESIGN.md) にある．
+
+## 必要なもの
+
+| | 用途 | 入手・確認 |
 |---|---|---|
-| 1 | Claude Code で PDF 1本を手動処理 | 完了 |
-| 2 | 並列処理・失敗処理・記録・保存期間 | 完了（2本同時で混入なしを確認） |
-| 3 | launchd による自動起動（inbox） | 完了 |
-| 4 | URL の手動処理 | 実装済み・**検証待ち** |
-| 5 | Codex 対応 | 未実装 |
+| macOS | launchd と TCC に依存している | — |
+| `claude` コマンド | AI の実行 | `claude --version` |
+| poppler | PDFからの文字・画像抽出 | `brew install poppler` |
+| Notion のデータベース | 登録先 | 下記のプロパティが必要 |
+| Notion MCP の認証 | Notion への登録 | `claude mcp list` で `notion: ✔ Connected` |
+| Slack アプリ | 通知 | Bot Token Scopes に `chat:write` |
 
-## 置き場所と macOS のプライバシー保護（重要）
+`launchd/install.sh status` で一括して確認できる．
 
-データ一式は **`~/Research/Papers/`** に置く．`PAPER_ROOT` で変更できるが，
-**`~/Documents`・`~/Desktop`・`~/Downloads` の配下には置いてはならない．**
+## Notion 側の準備
 
-launchd から起動したスクリプトは，これらのフォルダに対して次の非対称な制約を受ける
-（macOS の TCC．実測で確認済み）．
+登録先のデータベースに次のプロパティが必要である．**名前と形式が一致していないと登録に失敗する．**
 
-| 操作 | 結果 |
-|---|---|
-| 列挙（`ls` / `find`） | **失敗**（Operation not permitted） |
-| 既存ファイルの中身を読む | **失敗** |
-| 特定パスの存在判定（`[ -e ]`） | 成功 |
-| 書き込み・`mv` での配置 | 成功 |
+| プロパティ名 | 形式 | 内容 |
+|---|---|---|
+| `Citation Key` | タイトル | 引用キー（例 `Reingold1981TidierDrawings`） |
+| `Title` | テキスト | 原文タイトル |
+| `DOI` | URL | DOIリンクまたは公開URL |
+| `Summary` | テキスト | 概要（一段落） |
+| `Tag` | マルチセレクト | 分野・手法のタグ |
+| `Author` | テキスト | 著者（所属）・公開者 |
+| `Year` | 数値 | 出版年・公開年 |
+| `Publication` | テキスト | ジャーナル／会議／公開元 |
+| `Citation` | テキスト | BibTeX |
+| `Rating` | セレクト | `★` / `★★` / `★★★` |
+| `Favorite` | セレクト | `❤︎` / `❤︎❤︎` / `❤︎❤︎❤︎`（AI は設定しない） |
 
-列挙できないため inbox を走査できず，**エラーも出ず「対象なし」として静かに終わる**．
-`auto_queue.sh` はこの区別がつくよう，対象が無い場合に inbox のパスと実ファイル数を記録する．
+AI は `Tag` に新しい選択肢を追加する（既存の選択肢は保持する）．`Rating` と `Favorite` の
+選択肢は追加しない．要約の本文はページ本文に書き，先頭に代表画像を1枚挿入する．
 
-```
-対象なし（inbox=/Users/you/Research/Papers/inbox 全 0 ファイル）   ← ファイルがあるのに 0 なら TCC
-```
+## 導入
 
-`/bin/bash` にフルディスクアクセスを与えれば `~/Documents` でも動くが，
-bash で起動する全スクリプトが全ディスクへのアクセス権を得るため採らない．
-
-```
-~/Research/Papers/          ← PAPER_ROOT
-  Smith2024Example.pdf      ← 処理済みPDF（直下に並ぶ）
-  inbox/                    ← 自動処理の置き場（launchd が監視）
-  in_progress/              ← 取り込んだが直下へ出ていないPDF（失敗したものもここ）
-  .work/                    ← 1実行ごとの作業ディレクトリ
-  .logs/                    ← 実行記録（保存期間あり）
-```
-
-## 準備
+**1. 設定ファイル**
 
 ```sh
-cp .env.example .env     # NOTION_DATA_SOURCE_ID と SLACK_BOT_TOKEN / SLACK_CHANNEL を記入する
+cp .env.example .env
 ```
 
-必要なもの．
+`NOTION_DATA_SOURCE_ID`・`SLACK_BOT_TOKEN`・`SLACK_CHANNEL` を記入する．他は既定値で動く．
 
-- `claude` コマンド（PATH 上にあること）
-- Slack アプリの Bot トークン … **Incoming Webhook ではなく Web API を使う**（後述）
-- Notion MCP の認証 … `claude mcp add --transport http --scope user notion https://mcp.notion.com/mcp` の後，
-  **対話モードの `/mcp` で OAuth 認証**（初回のみ・手動．非対話では認証できない）
-- poppler … `brew install poppler`（`pdftotext`, `pdfimages`, `pdftoppm`, `pdfinfo`）
+**2. Notion MCP の認証（初回のみ・対話が必要）**
 
-`claude mcp list` で `notion: ✔ Connected` を確認できる．
-`launchd/install.sh status` でも一括して確認できる．
+```sh
+claude mcp add --transport http --scope user notion https://mcp.notion.com/mcp
+claude          # 対話モードで /mcp を実行して OAuth 認証する
+```
+
+非対話実行（`claude -p`）からは認証できないため，ここだけ手で行う．認証後，同じ対話モードで
+Notion MCP にデータベースを検索させると `NOTION_DATA_SOURCE_ID` に入れる値が得られる．
+
+**3. Slack アプリ**
+
+Bot Token Scopes に `chat:write` を付与し，**投稿先チャンネルにアプリを招待する**．
+`SLACK_CHANNEL` はチャンネルIDを推奨する（名前だと非公開チャンネルで使えず，
+`channels:read` が追加で必要になり，チャンネル名を変えると壊れる）．
+
+**4. 自動起動の登録**
+
+```sh
+launchd/install.sh install     # 解除は uninstall，確認は status
+```
+
+`~/Research/Papers/` 以下のディレクトリが作られる．
+
+> **`PAPER_ROOT` を `~/Documents`・`~/Desktop`・`~/Downloads` 配下に置いてはならない．**
+> launchd から起動したスクリプトはこれらを列挙・読取できない（macOS の TCC）．
+> しかもエラーにならず「対象なし」として終わるため気づきにくい．
 
 ## 使い方
 
-**1コマンド = 1文献 = AI プロセス1回 = Notion 1ページ**である．
+### 手動
 
 ```sh
-bin/ref paper.pdf                    # PDF を1本処理する
-bin/ref https://arxiv.org/abs/...    # Webページ・GitHubリポジトリ等を処理する
+bin/ref paper.pdf                    # PDF を1本
+bin/ref https://arxiv.org/abs/...    # Webページ・GitHubリポジトリ等
 ```
 
-同じ文献を補助する資料を添えられる．ファイル・フォルダ・URL を混在できる．
+同じ文献を補助する資料を添えられる．ファイル・フォルダ・URL を混ぜてよい．
 
 ```sh
 bin/ref paper.pdf --with appendix.pdf
 bin/ref paper.pdf --with supp/ https://github.com/owner/repo
-bin/ref https://arxiv.org/abs/... --with notes.md
 ```
 
-フォルダを渡しても順次処理はしない．**同じ文献を補助する資料としてまとめて1度の AI プロセスに渡す**．
+フォルダを渡しても順番に処理はしない．**同じ文献を補助する資料としてまとめて1度のAIプロセスに渡す．**
 
-2本の文献を登録したいときは `ref` を2回実行する．`--with` を付けずに2つ目を渡すと
-エラーになる（黙って1つ目の補助資料として扱うと，別の文献の情報が同じページに混ざるため）．
+2本の文献を登録するときは `ref` を2回実行する．`--with` なしで2つ渡すとエラーになる
+（黙って1本目の補助資料として扱うと，別の文献の情報が同じページに混ざるため）．
 
 ```sh
 bin/ref a.pdf b.pdf      # エラー
 ```
 
-自動処理は `~/Research/Papers/inbox/` に PDF を置くと走る（launchd が検知する）．
-inbox は単体PDFのみで，補助資料は付けられない．
+### 自動
 
-### 手動と自動の違い
+`~/Research/Papers/inbox/` に PDF を置くと走る．補助資料は付けられない．
 
-| | 手動（`bin/ref`） | 自動（inbox） |
-|---|---|---|
-| 対象の数 | 1コマンドに1つ（＋補助資料） | inbox にある全件 |
-| 補助資料 | 付けられる（`--with`） | 付けられない |
-| 配分の並列 | なし（1コマンド1プロセス） | あり |
-| 対象の取り込み | コピー（原本は動かさない） | `inbox` → `in_progress` へ `mv` |
-| 成功時のファイル | **元の場所で改名するだけ**（移動しない） | 改名して `PAPER_ROOT` 直下へ移動 |
-| 失敗時のファイル | **触らない**（元のまま） | `in_progress` に元の名前で残る |
+取り込むのは `.pdf` だけで，隠しファイル・`.icloud`・`.crdownload`・`.download`・
+`.part`・`.partial`・`.tmp` は無視する．**ファイルサイズが2秒変化しないことを確認してから**
+取り込むので，ダウンロード途中のファイルを掴まない．
 
-**自動は「手動と同じ処理」の前後に移動を1回ずつ足したものである．**
+複数のファイルを同時に置いてよい．同時に処理する数は `PAPER_PARALLEL`（既定2）までで，
+残りは順番待ちになる．
 
-```
-① inbox/paper.pdf → in_progress/paper.pdf         取り込み（mv）
-② in_progress のファイルに対して手動と同じ処理      コピーを AI に見せ，最後にその場で改名
-③ in_progress/<Key>.pdf → <Key>.pdf               直下へ出す（mv）
-```
+### してはいけないこと
 
-そのため `rename_step`（対象をその場で改名する）を両経路で共有し，
-自動の `place_result` はそれを呼んでから `move_into` で直下へ出すだけになっている．
+- **`inbox/` のファイルを `bin/ref` で指定しない．** 拒否される．inbox は自動処理の持ち場で，
+  手動で指すと自動が取り込んだ瞬間に対象が消える．
+- 同じ資料に同時に2回実行しない．検知して拒否される．
 
-**ユーザーのファイルは作業ディレクトリに入らない．入るのはコピーだけである．**
-これは `.work/` を「いつ削除しても安全な場所」にするための不変条件である．
-自動が本物を `.work/` に置いていると，取り残されたときに保存期間で消えてしまう．
+## ファイルの行き先
 
-失敗したものを inbox へ戻さないのは，次の変化で再処理され，失敗を繰り返すか
-重複登録になるためである．手動はユーザーが明示的に指したファイルなので，
-失敗時に別の場所へ移すと驚きが大きく，再処理のループも起きない．
-
-**`bin/ref` は `inbox/` 配下のファイルを拒否する．** inbox は自動処理の持ち場で，
-手動で指すと自動が取り込みのために `mv` した瞬間に対象が消える．
-
-### inbox の取り込み条件
-
-- 拡張子 `.pdf` のみ（大文字小文字を区別しない）
-- 隠しファイル，`.icloud`，`.crdownload`，`.download`，`.part`，`.partial`，`.tmp` は無視する
-- **サイズが `PAPER_SETTLE_SECONDS`（既定2秒）変化しないことを確認してから取り込む**
-  （ダウンロードやコピーの途中のファイルを掴まないため）
-- 処理の終了後に inbox を再走査する（処理中に追加された分を取りこぼさない）
-
-## 自動起動（launchd）
-
-```sh
-launchd/install.sh install     # 登録する（事前確認つき）
-launchd/install.sh status      # 状態・埋め込んだ claude のパスの有効性・最近のログ
-launchd/install.sh uninstall   # 解除する
-```
-
-`WatchPaths` で inbox の変化を検知する．launchd は対話シェルの環境変数・PATH を
-引き継がないため，導入時の `claude` の実パスを `PATH` の先頭に埋め込む．
-nvm 等で Node を入れ替えてパスが変わった場合は `status` が検出するので，再導入する．
-
-launchd は同じジョブを二重に起動しない．`RunAtLoad` を有効にしているため，
-停止中に置かれたPDFもログイン時に処理される．
-
-## AI の実行環境
-
-`claude -p` を資料1本ごとに新規起動する．渡すフラグの意図は
-[lib/engine_claude.sh](lib/engine_claude.sh) の冒頭に記している．
-
-AI が実行できるコマンドは次に限られる（許可リスト外は確認待ちにならず拒否される）．
+**手動はファイルを移動しない．** 成功したらその場で改名するだけで，失敗したら触らない．
 
 ```
-pdftotext  pdfimages  pdftoppm  pdfinfo  curl
+~/Downloads/paper.pdf ──成功──▶ ~/Downloads/Reingold1981TidierDrawings.pdf
+                      ──失敗──▶ ~/Downloads/paper.pdf（そのまま）
 ```
 
-- **1回の呼び出しで1コマンド**にする必要がある．`;` による連結は全体が拒否される
-- パイプ（`|`）は使える
-- `python3` は意図的に許可していない（後述の「既知の制約」）
-
-一覧は [lib/engine_claude.sh](lib/engine_claude.sh)（実際の許可）と
-[prompts/headless_addendum.md](prompts/headless_addendum.md)（AI への告知）の
-2箇所にあり，変更時は両方を直す必要がある．
-
-### モデルと effort
+**自動は直下へ出す．**
 
 ```
-PAPER_MODEL=opus      # opus / sonnet / fable / haiku
-PAPER_EFFORT=medium   # low / medium / high / xhigh / max
+inbox/paper.pdf
+  │
+  ▼
+in_progress/paper.pdf   ← 処理中．失敗したものもここに残る
+  │
+  ▼
+~/Research/Papers/Reingold1981TidierDrawings.pdf
 ```
 
-**明示的に固定している．** `--restricted` は user/project/local の設定ファイルを
-無視するため，指定しないと CLI の組み込み既定に依存し，更新で静かに変わる．
-実行記録の1行目に `model=` と `effort=` が入るので，後から遡れる．
+直下に同名があれば `_2`・`_3` が付く．
 
-サブスクリプション認証で動くため，`engine_raw.json` の `total_cost_usd` は
-リスト価格への換算値であって請求額ではない（`costBasis=list`）．
-実際の制約はプランの利用上限で，1本あたり Opus 換算で $1 相当を消費する．
-節約が必要なら `PAPER_MODEL=sonnet` に落とせる．
-
-## 構成
-
-```
-入口
-  bin/ref                 手動の入口（対象1つ ＋ --with 補助資料）
-  lib/scan_inbox.sh       inbox を走査し，1件ごとにワーカーを起動（launchd から）
-  lib/process_inbox.sh    inbox の1件を処理する
-
-共有
-  lib/run_one.sh          1資源の処理の流れ（骨格）
-  lib/analyze.sh          プロンプト組立 → エンジン起動 → 出力検証
-  lib/place.sh            改名と移動（ユーザーのファイルに触るのはここだけ）
-  lib/core.sh             環境・ログ・ロック・同時実行の枠・ステップ・混入ガード
-
-部品
-  lib/engine_claude.sh    claude -p の呼び出し
-  lib/notify_slack.sh     Slack 通知
-  lib/validate_result.py  最終出力の検証と正規化
-  lib/find_notion_url.py  transcript から作成済みページのURLを探す
-  lib/cleanup.sh          保存期間を過ぎた記録の削除
-  launchd/install.sh      launchd エージェントの導入・解除・状態確認
-
-指示文・設定
-  prompts/registration.md       書誌項目・要約・Notion登録の指示（何を作るか）
-  prompts/headless_addendum.md  無人実行用の追加ルール（混入防止・補助資料・コマンド制約・JSON出力）
-  schema/result.schema.json     AI の最終出力スキーマ
-  config/mcp.json               AI に見せる MCP サーバー（notion のみ）
-```
-
-### 流れと差し替え点
-
-処理の流れは `lib/run_one.sh` の1箇所にあり，経路ごとに違うのは**2つの関数だけ**である．
-呼び出し側（`bin/ref` と `lib/process_inbox.sh`）がこれを定義して差し替える．
-
-```
-run_one()
-  枠を取る → 実行ディレクトリ作成 → 混入ガード → 開始を通知
-  → prepare_target   ← 経路ごと（手動=コピー／自動=mv で取り込む）
-  → analyze          ← 共有
-  → place_result     ← 経路ごと（手動=その場で改名／自動=その場で改名 ＋ 直下へ移動）
-  → 記録 → 通知 → 枠を解放 → 片付け
-```
-
-**ユーザーのファイルに触る処理は `lib/place.sh` だけに閉じている**（`rename_to_key` と `move_into`）．
-`lib/analyze.sh` と `lib/core.sh` はファイルの改名・移動を行わない．
-
-一意な名前の決定は「着地させる関数」が行う．手動は `rename_to_key` が原本の
-ディレクトリ内で解決する．自動は `in_progress` で `rename_to_key`，`PAPER_ROOT` で
-`move_into` がそれぞれ解決するので，直下に同名があれば最終的に `<Key>_2.pdf` になる．
-取り込みのときも `move_into` を使うため，`in_progress` に同名が居れば `paper_2.pdf` に逃がす．
-
-エンジン差分は `lib/engine_<名前>.sh` に閉じているので，
-Codex 対応は共有部分に手を入れずに追加できる．
-
-### 並列と run_id
-
-自動は1件ごとに `lib/process_inbox.sh` を**別プロセスとして**起動する．
-`run_id` の末尾がプロセスID（`$$`）であり，bash ではサブシェルでも `$$` が親のままで，
-`BASHPID` は bash 4.0 以降（macOS は 3.2）にしか無い．
-サブシェルで並列化すると同時起動した2本が同じ `run_id` を持ち，
-作業ディレクトリと記録を共有してしまう．
-
-## 混入防止
-
-「論文同士の情報が混ざってはならない」が最重要要件である．次の多重の手当てで担保する．
-
-| 層 | 手段 |
+| ディレクトリ | 中身 |
 |---|---|
-| プロセス | 資料1本につき新規に起動する（`--continue`・`--resume` は使わない） |
-| 作業領域 | 資料1本ごとに専用ディレクトリを作り，AI のカレントディレクトリにする |
-| 設定 | `--restricted` で user/project/local の設定ファイルを無視する |
-| MCP | `--strict-mcp-config` ＋ `--mcp-config` で Notion 以外（claude.ai コネクタ等）を遮断する |
-| ファイルツール | `--restricted` で `Read`/`Write`/`Glob`/`Grep` を作業ディレクトリに限定する |
-| コマンド | 許可リスト外を拒否する．`od`・`head`・`grep` 等も作業ディレクトリ外では拒否される |
-| 元ファイル | AI には対象PDFの**コピー**のみを見せ，元ファイルには触れさせない |
-| 足場ファイル | `prompt.md` 等は記録ディレクトリ側に書き，作業ディレクトリには対象と `aux/` だけを置く |
-| 起動時検査 | 作業ディレクトリの祖先の `CLAUDE.md` を探し，あれば警告をログと Slack に出す |
-| 指示文 | 対象1本のみを扱うこと，Web検索結果はタイトル／著者／DOI の一致を確認したものだけ使うことを明示する |
+| `~/Research/Papers/` | 完了したPDF |
+| `inbox/` | 自動処理の置き場 |
+| `in_progress/` | **完了していないPDF**（処理中か失敗） |
+| `.work/` | 作業用．AIに見せるコピーだけが入る．完了すると消える |
+| `.logs/` | 実行記録．既定7日で消える |
 
-検証として，主題の近い2本（ツリー型チャットUIの論文と Sensecape）を同時に処理し，
-各ページの固有値12項目が自分のPDFにのみ存在することを確認した．
-一方のページに現れた相手の論文名は，原稿の参考文献リストに実在する正当な引用であった．
+## 通知の読み方
 
-### 補助資料は別プロセスでは守れない
-
-補助資料の機能は**意図的に複数の資料を1プロセスへ渡す**ものなので，
-「プロセスが分かれている」という保証が最初から存在しない．
-対象と補助資料の取り違えを防ぐのは次の2つだけである．
-
-| 手段 | 内容 |
-|---|---|
-| 作業ディレクトリの構造 | 対象は直下，補助資料は `aux/` 配下．パスでどちらか分かる |
-| 指示文 | 書誌情報は**対象からのみ**取る．補助資料は要約と代表画像のためにのみ使う．別の文献だと判断したら使わず `error` に記録する |
+1資料につき1メッセージで，処理の進行に応じて中身が書き換わる．
 
 ```
-.work/<run_id>/
-  Smith2024.pdf        ← 対象（AI から見て ./Smith2024.pdf）
-  aux/                 ← 補助資料
-    appendix.pdf
-    data.csv
-```
-
-また `bin/ref` は `--with` を省いた2つ目の引数を**エラーにする**．
-黙って補助資料として扱うと，2本の文献を登録しようとした人が
-気づかないまま1ページに混ざった要約を得てしまうためである．
-
-## 同時実行数の制御
-
-システム全体で同時に処理する資料を `PAPER_PARALLEL`（既定2）件に抑える．
-**仕組みは枠（slot）1つだけ**で，`lib/run_one.sh` の先頭で取り，終わりに解放する．
-
-```
-.work/.locks/slots/slot-1, slot-2, …   ← mkdir のアトミック性で排他する．中に PID を書く
-```
-
-枠は「**1資源を処理する許可**」である．取得してから対象を取り込むので，
-待っているプロセスはファイルを掴まない．
-
-**この順序は入れ替えてはならない．** 待機中に異常終了したとき，
-ファイルが inbox に残っていれば次の `RunAtLoad` で拾われる．先に取り込んでいると
-`in_progress` に残り，`WatchPaths` は inbox だけなので誰も拾わず黙って止まる．
-副次的に，`in_progress` に待ち行列のファイルが混ざらない利点もある．
-
-枠の状態はディスク上にあるため，**起動経路（手動・自動）や起動回数に関わらず合計が効く**．
-launchd は同じジョブを二重に起動しないが，`scan_inbox.sh` と手動 `bin/ref` は別プロセスなので
-重なりうる．キューの数を1つに制限するのではなく枠の総数を抑えることで上限が保たれる．
-
-`scan_inbox.sh` 側に配分の上限は持たせていない．何件起動しても枠の数だけが実際に処理されるため，
-同じことを二重に行う必要がない．
-
-異常終了で枠が残った場合は，枠に書いた PID の生存を確認して回収する
-（生きているプロセスの枠は奪わない）．
-
-同じ資料の二重処理は2つの仕組みで防ぐ．役割が違う．
-
-| 仕組み | 何を防ぐか |
-|---|---|
-| 取り込みの `mv`（原子的） | 自動の2プロセスが同じ inbox のファイルを取ること |
-| 資料ロック（実パスを鍵にする） | 同じファイルに対して別の処理が始まること |
-
-**資料ロックは両経路が取る．** 手動は原本のパスに，自動は取り込み後の `in_progress` の
-パスに立てる．`in_progress` はパスが安定しているため，処理中のファイルに人が
-`ref` をかけられてしまい，放っておくと同じ論文でNotionページが2つできる．
-自動が `.work/<run_id>/` に隠していた間は，この札は不要だった．
-
-ロックの取得順は経路間で逆である（手動は資料ロック→枠，自動は枠→資料ロック）．
-対象を知るタイミングが違うため避けられないが，交差するのは
-inbox のファイルを手動で指した場合だけなので，`bin/ref` がそれを拒否して根本から消している．
-
-## Slack 通知
-
-1資料につき1メッセージである．枠を取得した直後に `⏳ 処理中` を投稿し，
-終了時に `chat.update` で**同じメッセージを書き換える**．チャンネルが流れない．
-
-Incoming Webhook は使えない．応答が `ok` という文字列だけで，
-書き換えに必要な `ts` を返さないためである（実測で確認済み）．
-
-```
-SLACK_BOT_TOKEN=xoxb-...      # Bot Token Scopes に chat:write
-SLACK_CHANNEL=C0C8ME3G3DJ     # チャンネルID を推奨
-```
-
-`SLACK_CHANNEL` はチャンネル名（`#name`）でも動くが，**IDを推奨する**．
-名前だと非公開チャンネルで使えず，名前の解決に `channels:read` スコープが
-追加で必要になり，チャンネル名を変えると壊れる．
-
-### メッセージは3種
-
-1メッセージの中身を書き換えるので，見出しがそのまま状態になる．
-
-| 見出し | 条件 |
-|---|---|
-| `🚀 Started` | 枠を取得して処理を始めた |
-| `✅ Completed` | 全ステップが `completed` |
-| `🚨 Failed` | `completed` でないステップがある |
-
-```
-🚀 Started: ~/Research/Papers/inbox/Ma2023_Beyond ChatBots - ExploreLLM.pdf
+🚀 Started: ~/Research/Papers/inbox/paper.pdf
 run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium
 ```
 
@@ -382,343 +182,114 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 ③ finish page: failed
 ④ rename file: skipped
 ⑤ move file: skipped
-error: 図3が存在するが，アップロードしたファイルを本文先頭に挿入できなかった
+error: 図表は存在するが，代表画像を本文先頭に挿入できなかった
 citation_key: `Reingold1981TidierDrawings`
 file: `~/Research/Papers/in_progress/tidier-drawings.pdf`
 run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 63sec
 ```
 
-見出しの資料名はタイトルで，Notion ページができていればそのリンクになる．
-**タイトルが取れるまでは対象そのもの**（いまのファイルの場所 または URL）を出す．
-そのため `file:` 行は，見出しと重複する場合（タイトルが空のとき）は出さない．
+見出しは3つである．
 
-`warning:` の行は見出しを変えない．どちらの見出しでも出る．
-いま警告は1種類で，作業ディレクトリの祖先に `CLAUDE.md` がある場合である．
-
-```
-✅ Completed: Beyond ChatBots: ExploreLLM for Structured Thoughts…
-warning: 祖先に CLAUDE.md がある（混入のおそれ）: ~/CLAUDE.md
-citation_key: `Ma2023BeyondChatbots`
-file: `~/Research/Papers/Ma2023BeyondChatbots.pdf`
-run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 84sec
-```
-
-### ステップ
-
-| ステップ | 表示 | 判定根拠 | 担い手 |
-|---|---|---|---|
-| `fetch` | `fetch file` | 自動のみ．`inbox` → `in_progress` へ `mv` | シェル |
-| `create` | `create page` | `notion_url` が非空 | AI |
-| `finish` | `finish page` | `status` == `success` | AI |
-| `rename` | `rename file` | `rename_to_key` | シェル |
-| `move` | `move file` | 自動のみ．`in_progress` → `PAPER_ROOT` へ `mv` | シェル |
-
-内部のキーは表示名の動詞そのものである．語を二重に持たない．
-
-AIの出力2項目が，そのままAIの担当する2ステップに対応する．
-
-経路に存在するステップだけを出し，**番号は並び順**である．
-手動は `fetch file` と `move file` を持たないので `①②③` になる．
-
-| 経路 | `STEP_LIST` |
+| 見出し | 意味 |
 |---|---|
-| 手動・PDF | `create finish rename` |
-| 手動・URL | `create finish` |
-| 自動 | `fetch create finish rename move` |
+| `🚀 Started` | 処理を始めた |
+| `✅ Completed` | 全ステップが完了した．作業は要らない |
+| `🚨 Failed` | 完了していないステップがある |
 
-状態は3つある．**作業単位のライフサイクルを過去分詞で言う系統**に揃えてあり，
-見出しの `Started` / `Completed` / `Failed` と同じ系統である．
+`🚨 Failed` のときだけステップが並ぶ．
+
+| ステップ | 内容 |
+|---|---|
+| `fetch file` | inbox から in_progress へ移す（自動のみ） |
+| `create page` | Notion ページを作る |
+| `finish page` | ページを完成させる（**代表画像の挿入を含む**） |
+| `rename file` | Citation Key に改名する |
+| `move file` | 直下へ移す（自動のみ） |
+
+手動は `fetch file` と `move file` を持たないので `①②③` になる．
 
 | 状態 | 意味 |
 |---|---|
-| `completed` | 達成した |
+| `completed` | 完了した |
 | `failed` | 着手したが達成しなかった |
-| `skipped` | 始まらなかった（既定値．前段が失敗したので実行されなかった） |
+| `skipped` | 手前で止まったので実行していない |
 
-**状態名に `error` を使わない．** 理由の項目名が `error:`（スキーマの項目名）であり，
-同じメッセージの中で `error` が2つの意味で並んでしまう．
-`skipped` は，前段が失敗したときに後続をこう記録する CI の慣例に合わせている．
+見出しの資料名はタイトルで，Notion ページができていればそのリンクになる．タイトルが
+取れていないときは対象そのもの（ファイルの場所またはURL）が出る．
 
-`✅ Completed` はステップを出さない．全部 `completed` と分かっているため，
-情報量がない．
+`warning:` の行は見出しを変えない．作業ディレクトリの祖先に `CLAUDE.md` があるときに出る
+（無関係な指示がAIに読み込まれるおそれがある）．
 
-### 開始の通知は枠を取った直後に出す
+## 失敗したとき
 
-`notify_start` は**対象を用意する前**に投稿する．順序は
-枠 → 実行ディレクトリ作成 → **開始通知** → 取り込み（`fetch`）である．
-
-取り込みより後に出すと，取り込みに失敗したことを通知できない．
-`fetch` をステップとして数えるなら，その失敗も通知されなければ筋が通らない．
-そのため，取り込みに失敗した場合も黙って終了せず `🚨 Failed` を出す．
-
-```
-🚨 Failed: ~/Research/Papers/in_progress/paper.pdf
-① fetch file: completed
-② create page: skipped
-③ finish page: skipped
-④ rename file: skipped
-⑤ move file: skipped
-error: この資料は既に処理中である
-```
-
-`fetch file` は `mv` が成功したかどうかだけを表す．上の例は移動はできたが
-札が取れなかった場合で，**`failed` のステップが1つも無い `🚨 Failed`** になる．
-見出しと `error:` が理由を持つので成立する．
-
-### 再実行
-
-**`in_progress/` に残っているものが完了していないものである．** 直下へ出たものが完了したものである．
-`<run_id>_` のような接頭辞は付かないので，元の名前のまま再実行できる．
+**`in_progress/` に残っているものが，完了していないものである．** 元の名前のままなので，
+inbox へ戻せば再実行できる．
 
 ```sh
-# create page が failed のとき（ページ未作成）
 mv ~/Research/Papers/in_progress/paper.pdf ~/Research/Papers/inbox/
-
-# create page が completed のとき（ページ作成済み）— 先に Notion のページを削除する
-#   削除せずに再実行すると，同じ論文で2件目のページができる
 ```
 
-ステップの行が，再実行の前にやることを決める．`create page: completed` で
-`finish page: failed` なら，ページは存在するので消してから再実行する．
+**`create page: completed` のときは，先に Notion のページを削除する．** ページは既に
+存在するので，消さずに再実行すると同じ論文で2件目ができる．URLは通知の見出しのリンクにある．
 
-手動で失敗した場合は原本に触っていないので，同じコマンドを打ち直すだけである．
+手動で失敗した場合は原本に触っていないので，同じコマンドを打ち直すだけでよい．
 
-`in_progress/` のファイルを `bin/ref` で直接指してもよい．手動はファイルを移動しないので，
-成功すると `in_progress/` の中で改名されたまま残り，直下へ移すのは手作業になる．
-枠の空きを待たずに走る点だけが利点である．
+### 原因別
 
-`in_progress/` にあるものが「実行中」か「失敗」かは見分けられない．
-並列は既定2件で1本あたり1分程度なので，残っているものは実質的に失敗である．
-
-### エンジン自身の失敗は区別して報告する
-
-利用上限（429）・認証切れ・ネットワーク障害は**資料の問題ではない**．
-`engine_raw.json` の `is_error` / `api_error_status` / `result` を見て，
-AI が資料を読んで `failed` と判断した場合と区別し，原因をそのまま通知に出す．
-
-```
-• 理由: 利用上限またはレート制限に達した（429） — You've hit your session limit · resets 10:40am (Asia/Tokyo)
-```
-
-これを入れる前は「AIの出力JSONを検証できなかった」と表示されるだけで，
-上限に達したことも回復時刻も分からなかった．判定は `lib/engine_claude.sh` の
-`engine_error_summary` にあり，エンジン固有なので engine 層に置いている．
-
-なお上限超過でもファイルは `in_progress/` へ移る．回復後に手で inbox へ戻して再実行する．
-
-`notion_url` が空かどうかが「再実行の前に既存ページを消す必要があるか」を決める．
-そのため指示文では，ページを作成した後に `failed` となった場合も
-`notion_url` を必ず記録するよう求めている．
-
-### 構造化出力が得られなかった場合
-
-構造化出力は AI が最後にまとめて返すため，利用上限（429）などで途中切断されると
-得られない．**しかしその時点でページが作成済みであることはありうる．**
-
-存在するページを「未作成・そのまま再実行可」と通知すると，再実行で重複登録になる．
-そのため検証に失敗した場合は，`transcript.jsonl` に残る `notion-create-pages` の
-結果からURLを拾い，② を正しく判定する（`lib/find_notion_url.py`）．
-
-400 などで拒否された呼び出しは無視する（ページは作られていないため）．
-AI 側に手順を足していないので，AI が指示に従うかどうかに依存しない．
-
-## AI の最終出力
-
-```
-status        "success" | "failed"   → ステップ finish page の判定
-citation_key  スクリプトが改名に使う
-title         通知の見出し
-notion_url    ページを作成したら failed でも必ず入れる → ステップ create page の判定
-error         失敗した段階と理由．成功時は空 → 通知の error: 行
-```
-
-通知の `error:` という項目名はここから来ている．
-そのため**ステップの状態名には `error` を使わない**（同じ語が2つの意味で並ぶ）．
-
-Rating は Notion のプロパティには入るが，スクリプトへは返さない．
-スクリプト側で必要とする場面がないためである．
-
-### 代表画像の取得順
-
-**対象そのものから取れるものを優先する．** `pdfimages` でPDFから抽出し，
-図がベクタで取れない場合だけ公式サイト（arXiv HTML版等）から取り，
-最後の手段として `pdftoppm` でページを画像化して図の範囲を切り出す．
-
-以前は公式サイトを1番目にしていたが，実行記録13本を調べて入れ替えた．
-
-| 取得元 | 件数 | 備考 |
-|---|---|---|
-| arXiv HTML版 | 4 | 成功は全て arXiv．出版社サイトは実績ゼロ．新しい論文には HTML 版が無い |
-| PDF 抽出 | 5 | 対象そのものなので常に手元にある |
-
-理由は3つある．**確実性**（PDFは必ず手元にあるが，HTMLはarXivの一部にしか無い）．
-**費用**（HTMLは「200の確認 → img一覧 → 取得」で3回，PDFは `-list` → `-png` で2回．
-HTMLが無い場合はそのうえでPDF経路を全部やる）．
-**混入防止**（PDF抽出は対象ファイル自身からの取得なので混入の余地がないが，
-HTML経路は別論文の図を拾う余地が残り，タイトル・著者・DOIの一致確認が必要になる）．
-
-`pdftoppm` は以前「該当ページ全体を画像化してもよい」としていたが，
-実際の実行では AI が `-x -y -W -H` で図だけを切り出していた（指示文のほうが劣っていた）．
-ページ全体を代表画像にすると本文が写り込む．
-
-`success` になるのは，Notion 登録が完了し，**かつ代表画像が入っている**場合のみである．
-図表が存在するのに入れられなければ `failed` とする（代表画像は要約の一部であり，
-入っていない登録を完了とはみなさない）．対象に図表がそもそも無ければ画像なしで `success`．
-
-この基準は当初の仕様書 §7.1（「画像の失敗は全体の失敗としない」）から変更している．
-
-## 実行記録
-
-`PAPER_LOG_DIR/<run_id>/` に保存する（既定 7 日で削除）．
-
-| ファイル | 内容 |
+| `error:` の内容 | 対処 |
 |---|---|
-| `run.log` | 開始・終了，対象，エンジン，モデル，effort，終了コード，配置先 |
-| `result.json` | 検証・正規化済みの最終出力 |
-| `engine_raw.json` | エンジンの生出力（`session_id`，トークン数等を含む） |
-| `transcript.jsonl` | AI の実行記録（ツール呼び出しの全経過） |
-| `prompt.md` | 実際に渡した指示文 |
-| `engine.stderr` | エンジンの標準エラー出力 |
-| `slack_post.json` / `slack_update.json` | Slack API の応答（通知が届かない場合の調査用） |
+| `利用上限またはレート制限に達した（429）` | 表示されたリセット時刻を過ぎてから再実行する |
+| `有効なPDFではない` / `内容が空だった` | ファイルを正しいものに差し替える |
+| `Invalid multi_select value for property "Tag"` | そのまま再実行する |
+| `citation_key が妥当でない` | 繰り返すなら書誌情報が取れていない．`--with` で公式サイトを添える |
+| `図表は存在するが…挿入できなかった` | Notion のページを消してから再実行する |
 
-成功時は作業ディレクトリを削除し，失敗時は調査用に残す（保存期間の削除対象に含める）．
-`in_progress/` のPDF自体は保存期間では削除しない（完了していないまま残す）．
+### 困ったとき
 
-`transcript.jsonl` は Claude Code 自身が保存するセッションファイルを
-`session_id` で検索して複製したものである．AI がどのコマンドを実行して
-どこで失敗したかを特定できる．
+```sh
+tail -f ~/Research/Papers/.logs/launchd.err.log   # 自動処理のログ
+ls ~/Research/Papers/.logs/<run_id>/              # 1実行の記録
+```
 
-## 環境変数
+記録には `prompt.md`（AIに渡した指示文の全文）・`transcript.jsonl`（AIの全操作）・
+`result.json`（AIの最終出力）が入っている．
 
-`.env` に書く（`.gitignore` 済み）．`.env.example` に雛形がある．
+| 症状 | 原因 |
+|---|---|
+| 自動処理が走らない | `launchd/install.sh status` で登録と PATH を確認する |
+| ログに `対象なし（inbox=… 全 N ファイル）`．**N が 0 でない** | TCC．`PAPER_ROOT` が `~/Documents` 等の配下にある |
+| 通知が来ない | `SLACK_BOT_TOKEN`・`SLACK_CHANNEL`．アプリをチャンネルに招待したか |
+| `notion: ✗` | `claude` の対話モードで `/mcp` から再認証する |
+| `Invalid multi_select value` が続く | 登録先のデータベースに `Tag` がマルチセレクトで存在するか |
 
-| 変数名 | 既定値 | 説明 |
+## 設定
+
+`.env` に書く．既定値で動くので，必要なものだけ書けばよい．
+
+| 変数 | 既定 | 内容 |
 |---|---|---|
-| `NOTION_DATA_SOURCE_ID` | （必須） | 登録先データソースID |
-| `SLACK_BOT_TOKEN` | （必須） | Slack Bot トークン（`chat:write`）．**秘密情報** |
-| `SLACK_CHANNEL` | （必須） | 投稿先．チャンネルID を推奨 |
-| `PAPER_ROOT` | `$HOME/Research/Papers` | 処理済みPDFの保存先．他フォルダの基準 |
+| `NOTION_DATA_SOURCE_ID` | （必須） | 登録先のデータソースID |
+| `SLACK_BOT_TOKEN` | （必須） | Bot トークン |
+| `SLACK_CHANNEL` | （必須） | チャンネルID |
+| `PAPER_ROOT` | `~/Research/Papers` | 置き場所の親．**`~/Documents` 配下は不可** |
 | `PAPER_INBOX_DIR` | `$PAPER_ROOT/inbox` | 自動処理の置き場 |
-| `PAPER_IN_PROGRESS_DIR` | `$PAPER_ROOT/in_progress` | 取り込んだが直下へ出ていないPDF |
+| `PAPER_IN_PROGRESS_DIR` | `$PAPER_ROOT/in_progress` | 完了していないPDF |
 | `PAPER_WORK_DIR` | `$PAPER_ROOT/.work` | 作業ディレクトリ |
 | `PAPER_LOG_DIR` | `$PAPER_ROOT/.logs` | 実行記録 |
-| `PAPER_ENGINE` | `claude` | `claude` または `codex`（codex は未実装） |
-| `PAPER_MODEL` | `opus` | AI のモデル |
-| `PAPER_EFFORT` | `medium` | AI の effort |
-| `PAPER_PARALLEL` | `2` | システム全体の同時処理数 |
-| `PAPER_LOG_RETENTION_DAYS` | `7` | 実行記録の保存日数 |
-| `PAPER_SETTLE_SECONDS` | `2` | inbox で書き込み完了と判定するまでの待ち時間 |
-| `PAPER_MAX_ROUNDS` | `20` | inbox の再走査の上限 |
-| `PAPER_AUX_MAX_BYTES` | `52428800`（50MB） | 補助資料の合計サイズの上限 |
-| `PAPER_AUX_MAX_FILES` | `100` | 補助資料のファイル数の上限 |
+| `PAPER_ENGINE` | `claude` | `claude` のみ（`codex` は未実装） |
+| `PAPER_MODEL` | `opus` | 節約したい場合は `sonnet` |
+| `PAPER_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` |
+| `PAPER_PARALLEL` | `2` | 同時に処理する資料の数（手動と自動の合計） |
+| `PAPER_LOG_RETENTION_DAYS` | `7` | 実行記録を残す日数 |
+| `PAPER_SETTLE_SECONDS` | `2` | inbox のファイルのサイズ安定を待つ秒数 |
+| `PAPER_MAX_ROUNDS` | `20` | 処理後に inbox を再走査する上限回数 |
+| `PAPER_AUX_MAX_FILES` | `100` | `--with` の上限（ファイル数） |
+| `PAPER_AUX_MAX_BYTES` | `52428800` | `--with` の上限（50MB） |
 
-`PAPER_ROOT` を変えれば他のフォルダはすべて追従する．
-Webhook URL はログや通知本文に出力しない．
+## 制約
 
-## 仕様からの変更
-
-当初の仕様書（`HANDOVER.md`）から変更した点．いずれも実測に基づく．
-**節番号はその仕様書のものである．** 仕様書そのものは本書へ内容を移したうえで削除した
-（`git show 48958e9:HANDOVER.md` で読める）．
-
-| 箇所 | 変更 | 理由 |
-|---|---|---|
-| §4 保存先 | `~/Documents/研究/論文` → `~/Research/Papers` | TCC により launchd から `~/Documents` を列挙できない |
-| §7.2 起動コマンド | `--restricted` / `--strict-mcp-config` / `--mcp-config` を併用 | 作業ディレクトリ外の読取と Notion 以外の MCP を実際に遮断できる |
-| §5 環境変数 | `PAPER_MODEL` / `PAPER_EFFORT` を追加 | 指定しないと CLI の既定に依存し，更新で静かに変わる |
-| §6.2 手動コマンド | PDFを inbox 経由にせず，その場で改名する | 「手動起動は移動させない」との決定による |
-| §8.2 多重起動 | 同時実行数をシステム全体の枠で抑える | `scan_inbox.sh` と手動コマンドは別プロセスで重なりうる |
-| §6.2 手動コマンド | 1コマンド1文献にし，`--with` で補助資料を添える | フォルダを「複数の文献」ではなく「同じ文献を補助する資料」として扱うため |
-| §7.1 画像の失敗 | 画像が入らなければ `failed` とする | 代表画像は要約の一部であり，入っていない登録を完了とはみなさない |
-| §7.4 出力スキーマ | 8項目 → 5項目（`rating_reason`・`image_status`・`rating` を削除） | 前2つはどこにも表示しておらず（`status` と `error` で表せる），`rating` はスクリプトが使わない |
-| §10 通知 | Webhook → Web API．1資料1メッセージを書き換える | Webhook は `ts` を返さず書き換えができない |
-
-## 2つの指示文の分担
-
-同じことを2箇所に書かない．矛盾した場合にどちらが効くか分からなくなり，
-片方だけ直した状態が生まれる．
-
-| | 範囲 |
-|---|---|
-| `registration.md` | **何を作るか**．書誌項目の定義，要約の構成，Notion のスキーマと登録設定，タグの追加手順 |
-| `headless_addendum.md` | **無人実行での追加・変更**．対象の限定，補助資料，Web検索の扱い，コマンドの制約，画像の取得手順，最終出力 |
-
-一方から他方を参照する場合は節番号で指す（例：「§6 に定める」）．
-
-## 保留している作業
-
-### Codex 対応
-
-`PAPER_ENGINE=codex` は受け付けるが `lib/engine_codex.sh` が無く，明示的なエラーで止まる．
-`codex` コマンド自体も未インストールである．
-
-当初の仕様書にあった起動コマンドを記録として残す．**一部は当時実測されているが，
-その後の決定で上書きされた点がある**ため，そのまま使ってはならない．
-
-```bash
-codex exec --skip-git-repo-check \
-  --sandbox workspace-write \
-  -c 'sandbox_workspace_write.network_access=true' \
-  -c 'approval_policy="never"' \
-  -c 'web_search="live"' \
-  --json \
-  --output-schema schema/result.schema.json \
-  -o "$WORK/result.json" \
-  "$PROMPT"
-```
-
-当時の確認状況．
-
-- `--json` で全イベント（コマンド実行，MCP呼び出し，Web検索等）が JSONL で出る（**実測済み**）
-- 既定は読み取り専用サンドボックスなので `--sandbox workspace-write` が必要（**実測済み**）
-- `--ephemeral` は付けない（実行記録を残すため）
-- `sandbox_workspace_write.network_access` のキー名，および `approval_policy="never"` 下で
-  Notion MCP 呼び出しが拒否されないかは**未検証**
-
-その後の決定で変わった点．
-
-| 当時 | 現在 |
-|---|---|
-| `-o "$WORK/result.json"` | **`$RECORD_DIR` に書く**．作業ディレクトリに足場ファイルを置くと，AI が「対象以外のファイルがある」と報告する |
-| モデルと effort の指定なし | **明示的に固定する**（`--model` と `-c model_reasoning_effort=`）．指定しないと CLI の既定に依存する |
-| 作業ディレクトリの指定なし | **`--cd` で作業ディレクトリを渡す** |
-| `codex mcp add notion` | 既定の `~/.codex/config.toml` に書くと，**ユーザーの他の MCP サーバーも AI から見える**．`CODEX_HOME` を専用ディレクトリにして分離する必要がある（`--strict-mcp-config` に相当するオプションが codex に無い） |
-
-実装前に判断が必要な問題が3つある．
-
-1. **混入防止の水準が下がる．** `--restricted` はファイルツールの**読み取り**も作業ディレクトリに
-   限定するが，codex の `workspace-write` が制御するのは書き込みと承認で，読み取りは限定されない．
-   他の論文PDFを読める状態になる．
-2. **コマンドの許可リストが無い．** `ALLOWED_COMMANDS` を `--allowedTools` で強制している防御が
-   消える．`python3` を外した判断（作業ディレクトリ外を読めるため）が効かなくなる．
-   さらに Notion への画像アップロードに `curl` が必要なので，サンドボックスに
-   ネットワーク許可を与えることになる．
-3. **初回設定が増える．** 専用 `CODEX_HOME` の中で `codex login` と `codex mcp login` を
-   対話で行う必要がある（`auth.json` が `CODEX_HOME` 配下にあるため）．
-
-### `curl` の `file://` を塞ぐ
-
-アップロード専用のラッパーに置き換える案がある（既知の制約を参照）．
-
-## 作らないもの（決定）
-
-- 重複検知（同じ資料を2回処理すれば2件登録される）
-- 対話画面から起動するスキル
-- Notion への書き込みをスクリプトで行う方式（**Notion 登録は AI が持つ**）
-- Notion データベースへのプロパティ追加
-- OS 通知（Slack のみ）
-- Claude Code・Codex 以外のエンジン
-
-## 既知の制約
-
-- **`curl` の `file://` は作業ディレクトリ外を読める．** 混入防止の最後の穴である．
-  Notion へのファイルアップロードに必須（`WebFetch` では POST できない）なため残している．
-  アップロード専用の自前ラッパーに置き換えれば塞げる．
-- 補助資料と対象の取り違えは，作業ディレクトリの構造と指示文だけで防いでいる．
-  プロセスの分離では守れない（意図的に1プロセスへ渡すため）．
-- AI は Notion データベースに新しいタグを追加できる（指示文で承認不要としているため）．
-  これまでに `reflection`・`sensemaking`・`creativity` が追加された．
-- 重複登録は検知しない（同じ資料を2回処理すれば2件登録される．仕様どおり）．
-- URL モード（段階4）は実装済みだが未検証である．
-- `in_progress/` にあるファイルが「実行中」か「失敗」かは区別できない．
-  `failed/` を分けていたときは区別できたが，フォルダを2つ持つ構成をやめた．
+- **重複は検知しない．** 同じ資料を2回処理すれば Notion に2件登録される．
+- `in_progress/` にあるファイルが「処理中」か「失敗」かは見分けられない．同時実行は既定2件で
+  1本あたり1分程度なので，残っているものは実質的に失敗である．
+- URL を対象にする経路は未検証である．
+- 対話画面から起動するスキル，OS通知，`claude` 以外のエンジンは用意していない．

@@ -4,7 +4,7 @@
   reference-analyzer: inbox の変化を検知して scan_inbox.sh を起動する．
 
   プレースホルダーは launchd/install.sh が置換する．
-  launchd は対話シェルの環境を引き継がないため，PATH を明示する（§8.3）．
+  launchd は対話シェルの環境を引き継がないため，PATH を明示する．
   .env はスクリプト側（lib/core.sh）で読み込む．
 -->
 <plist version="1.0">

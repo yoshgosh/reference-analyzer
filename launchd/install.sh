@@ -5,7 +5,7 @@
 #   launchd/install.sh uninstall   登録を解除する
 #   launchd/install.sh status      状態を表示する
 #
-# launchd は対話シェルの環境を引き継がないため，PATH を明示して埋め込む（§8.3）．
+# launchd は対話シェルの環境を引き継がないため，PATH を明示して埋め込む．
 # claude の実パスから PATH を組み立てるので，nvm 等でパスが変わる環境でも導入時点の
 # 場所が記録される．Node を入れ替えた場合は再導入が必要である（status で検出できる）．
 set -euo pipefail
