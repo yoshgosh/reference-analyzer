@@ -133,7 +133,6 @@ notify_done() {  # <配置結果の説明>
   text="$(printf '%s\n' \
     ":white_check_mark: *完了*（$(mode_label)） — ${TITLE:-（タイトル不明）}" \
     "• Citation Key: \`${CITATION_KEY}\`" \
-    "• Rating: ${RATING:-（なし）}" \
     "• Notion: ${NOTION_URL:-（URLなし）}" \
     "• ファイル: ${placement:-（なし）}" \
     "$(run_footer)")$(guard_line)"

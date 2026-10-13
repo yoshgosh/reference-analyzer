@@ -97,7 +97,6 @@
 | `citation_key` | 登録した Citation Key（ASCII 英数字のみ） |
 | `title` | 原文タイトル |
 | `notion_url` | 作成した Notion ページのURL |
-| `rating` | 評価（`★` / `★★` / `★★★`） |
 | `error` | 失敗した段階と理由．成功時は空文字列 |
 
 ### status の基準

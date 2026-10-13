@@ -5,9 +5,8 @@
     "citation_key": { "type": "string" },
     "title": { "type": "string" },
     "notion_url": { "type": "string" },
-    "rating": { "type": "string" },
     "error": { "type": "string" }
   },
-  "required": ["status", "citation_key", "title", "notion_url", "rating", "error"],
+  "required": ["status", "citation_key", "title", "notion_url", "error"],
   "additionalProperties": false
 }

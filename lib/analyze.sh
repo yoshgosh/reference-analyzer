@@ -70,12 +70,10 @@ analyze() {  # <対象の記述> <補助資料の記述>
     CITATION_KEY="$(normalize_key "$(json_get "$RESULT_JSON" citation_key)")"
     TITLE="$(json_get "$RESULT_JSON" title)"
     NOTION_URL="$(json_get "$RESULT_JSON" notion_url)"
-    RATING="$(json_get "$RESULT_JSON" rating)"
     ERROR_MESSAGE="$(json_get "$RESULT_JSON" error)"
   else
     log_msg "出力JSONの検証に失敗した"
     RESULT_STATUS="failed"; CITATION_KEY=""; TITLE=""; NOTION_URL=""
-    RATING=""
     ERROR_MESSAGE="AIの出力JSONを検証できなかった（記録: ${RECORD_DIR}）"
 
     # 構造化出力が無くてもページが作成済みであることはありうる．
@@ -89,7 +87,7 @@ analyze() {  # <対象の記述> <補助資料の記述>
     py -c '
 import json, sys
 json.dump({"status": "failed", "citation_key": "", "title": "",
-           "notion_url": sys.argv[3], "rating": "", "error": sys.argv[2]},
+           "notion_url": sys.argv[3], "error": sys.argv[2]},
           open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 ' "$RESULT_JSON" "${engine_error:-$ERROR_MESSAGE}" "$NOTION_URL" 2>/dev/null || true
   fi
