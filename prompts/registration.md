@@ -87,6 +87,15 @@ statements: ALTER COLUMN "Tag" SET MULTI_SELECT('既存1':blue, '既存2':green,
 
 使える色：`blue` `green` `purple` `orange` `yellow` `pink` `gray` `red` `brown` `default`
 
+#### 選択肢を追加してよいのは `Tag` のみ
+
+`Rating` と `Favorite` もセレクトだが，**これらの選択肢は固定である。追加・変更してはならない。**
+`Rating` は `★` / `★★` / `★★★` のいずれかを選ぶ。`Favorite` は空のままにする。
+
+選択肢の文字列を推測して書いてはならない。`❤︎` のように見た目が同じでも
+異体字セレクタの有無で別の文字列になり、400 で拒否される。
+設定する必要が生じた場合は、`notion-fetch` で取得した値をそのまま使う。
+
 ### Author（著者・公開者）
 
 - 形式：`著者名（所属機関名）` をカンマ区切りで列挙
@@ -198,9 +207,9 @@ parent.data_source_id = "{{NOTION_DATA_SOURCE_ID}}"
 | `Publication`  | ジャーナル／会議／公開元 | テキスト       |
 | `Citation`     | BibTeX                   | テキスト       |
 | `Rating`       | 重要度評価               | セレクト       |
-| `Favorite`     | お気に入り               | チェックボックス |
+| `Favorite`     | お気に入り               | セレクト       |
 
-Favoriteは特に指定がない限り、**チェックなし**で登録する。
+`Favorite` は特段の指示がない限り**設定しない**（空のままにする）。
 
 #### コンテンツ（ページ本文）
 
