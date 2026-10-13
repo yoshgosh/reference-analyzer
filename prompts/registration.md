@@ -39,9 +39,10 @@
 
 ### Citation Key
 
-- 引用キー
-    - 原則 `第一著者の姓（または公開組織名）＋年＋タイトルのキーワード`（例：`Smith2024Example`）
-        - 年が不明な場合は `n.d.` を使用
+- 原則 `第一著者の姓（または公開組織名）＋年＋タイトルのキーワード`（例：`Smith2024Example`）
+- **ASCII の英数字のみ**で構成する（記号・空白・非ASCII文字を含めない）
+    - 日本語の著者名・組織名はローマ字化する（例：山田太郎 → Yamada）
+    - 年が不明な場合は `nd` を用いる（BibTeX 内の表記は `n.d.` でよい）
 
 ### Title
 
@@ -167,13 +168,7 @@ statements: ALTER COLUMN "Tag" SET MULTI_SELECT('既存1':blue, '既存2':green,
 ### 代表的な図表・画像
 
 - 資料の内容を代表する図表・画像を原則1点選ぶ
-- 画像は以下の優先順位で取得する
-    1. 公式サイト（arXiv HTML版・出版社サイト等）から元画像を取得
-    2. 取得できない場合はPDFから抽出
-    3. いずれも困難な場合は公式画像URLを利用
-- 取得した画像は、Notionにアップロードし、その後ページ本文の**最初**に画像ブロックとして挿入する
-- キャプションに日本語の説明を記載する（図表番号・出典があれば含める）
-- 登録後に画像とキャプションの保存を確認する
+- 取得・アップロード・挿入の手順は「無人実行時の追加ルール」§6 に定める
 
 ---
 
@@ -210,35 +205,6 @@ Favoriteは特に指定がない限り、**チェックなし**で登録する�
 #### コンテンツ（ページ本文）
 
 代表画像と階層型箇条書きの要約
-
-### 実行コマンド例
-
-```json
-{
-    "parent": { "data_source_id": "{{NOTION_DATA_SOURCE_ID}}" },
-    "pages": [
-        {
-            "properties": {
-                "Citation Key": "引用キー",
-                "Title": "抽出した原文タイトル",
-                "DOI": "https://doi.org/10.xxxx/example",
-                "Summary": "抽出した概要．",
-                "Tag": ["tag1", "tag2"],
-                "Author": "著者1 (MIT), 著者2 (Stanford), 著者3 (OIST)",
-                "Year": 2024,
-                "Publication": "ジャーナル名, Vol. X, No. Y, pp. Z-W",
-                "Citation": "@article{...完全なBibTeX...}",
-                "Rating": "★★",
-                "Favorite": false
-            },
-            "content": "代表画像と詳細な要約のMarkdown"
-        }
-    ],
-    "allow_async": false
-}
-```
-
----
 
 ## 重要な注意事項
 

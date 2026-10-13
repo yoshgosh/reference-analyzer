@@ -193,7 +193,7 @@ PAPER_EFFORT=medium   # low / medium / high / xhigh / max
   launchd/install.sh      launchd エージェントの導入・解除・状態確認
 
 指示文・設定
-  prompts/registration.md       指示文の正本（現行の claude.ai プロジェクト指示文）
+  prompts/registration.md       書誌項目・要約・Notion登録の指示（何を作るか）
   prompts/headless_addendum.md  無人実行用の追加ルール（混入防止・補助資料・コマンド制約・JSON出力）
   schema/result.schema.json     AI の最終出力スキーマ
   config/mcp.json               AI に見せる MCP サーバー（notion のみ）
@@ -367,12 +367,14 @@ AI 側に手順を足していないので，AI が指示に従うかどうか�
 
 ```
 status        "success" | "failed"
-citation_key
-title
+citation_key  スクリプトが改名に使う
+title         通知の見出し
 notion_url    ページを作成したら failed でも必ず入れる
-rating
 error         失敗した段階と理由．成功時は空
 ```
+
+Rating は Notion のプロパティには入るが，スクリプトへは返さない．
+スクリプト側で必要とする場面がないためである．
 
 `success` になるのは，Notion 登録が完了し，**かつ代表画像が入っている**場合のみである．
 図表が存在するのに入れられなければ `failed` とする（代表画像は要約の一部であり，
@@ -443,6 +445,18 @@ Webhook URL はログや通知本文に出力しない．
 | §7.1 画像の失敗 | 画像が入らなければ `failed` とする | 代表画像は要約の一部であり，入っていない登録を完了とはみなさない |
 | §7.4 出力スキーマ | 8項目 → 6項目（`rating_reason`・`image_status` を削除） | 前者はどこにも表示しておらず，後者は `status` と `error` で表せる |
 | §10 通知 | Webhook → Web API．1資料1メッセージを書き換える | Webhook は `ts` を返さず書き換えができない |
+
+## 2つの指示文の分担
+
+同じことを2箇所に書かない．矛盾した場合にどちらが効くか分からなくなり，
+片方だけ直した状態が生まれる．
+
+| | 範囲 |
+|---|---|
+| `registration.md` | **何を作るか**．書誌項目の定義，要約の構成，Notion のスキーマと登録設定，タグの追加手順 |
+| `headless_addendum.md` | **無人実行での追加・変更**．対象の限定，補助資料，Web検索の扱い，コマンドの制約，画像の取得手順，最終出力 |
+
+一方から他方を参照する場合は節番号で指す（例：「§6 に定める」）。
 
 ## 既知の制約
 
