@@ -44,6 +44,7 @@ preflight() {
 
   echo "  NOTION_DATA_SOURCE_ID : $NOTION_DATA_SOURCE_ID"
   echo "  inbox             : $PAPER_INBOX_DIR"
+  echo "  in_progress       : $PAPER_IN_PROGRESS_DIR"
   echo "  PAPER_PARALLEL    : $PAPER_PARALLEL"
   echo "  engine / model    : $PAPER_ENGINE / $PAPER_MODEL / effort=$PAPER_EFFORT"
 
@@ -54,7 +55,7 @@ do_install() {
   echo "事前確認:"
   preflight || { echo "事前確認に失敗した．導入を中止する" >&2; exit 1; }
 
-  mkdir -p "$PAPER_INBOX_DIR" "$PAPER_LOG_DIR" "$HOME/Library/LaunchAgents"
+  mkdir -p "$PAPER_INBOX_DIR" "$PAPER_IN_PROGRESS_DIR" "$PAPER_LOG_DIR" "$HOME/Library/LaunchAgents"
 
   # claude の所在を PATH の先頭に置く．nvm 配下でも確実に見つかるようにする．
   local claude_dir path_value

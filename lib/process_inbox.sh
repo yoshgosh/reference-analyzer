@@ -6,7 +6,15 @@
 # lib/scan_inbox.sh から1件ごとに別プロセスとして起動される．
 # 別プロセスであることが run_id の一意性（末尾が $$）と枠の PID 追跡の前提になっている．
 #
-# 手動経路との違いはこのファイルの prepare_target と place_result だけである．
+# 自動は「手動と同じ処理」の前後に移動を1回ずつ足したものである．
+#
+#   ① inbox → in_progress へ確保する（mv の原子性が自動どうしの排他になる）
+#   ② in_progress のファイルに対して手動と同じ処理を行う
+#      （コピーだけを AI に見せ，最後にその場で改名する）
+#   ③ in_progress → PAPER_ROOT へ出す
+#
+# 失敗したものは in_progress に残る．inbox へ戻すと次の変化で再処理され，
+# 失敗を繰り返すか重複登録になる．再実行するときは inbox へ戻す．
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,64 +28,66 @@ fi
 
 load_env || exit 1
 
-trap 'release_slot 2>/dev/null || true' EXIT
+LOCK_PATH=""
+cleanup_on_exit() {
+  release_slot 2>/dev/null || true
+  [ -n "$LOCK_PATH" ] && release_lock "$LOCK_PATH"
+}
+trap cleanup_on_exit EXIT
 
 ORIG_NAME="$(basename "$INBOX_PATH")"
 RUN_MODE=auto
 TARGET_KIND=file
 TARGET_LABEL="$ORIG_NAME"
-TARGET_DESC="$(printf '%s\n' \
-  "- 種別: PDFファイル" \
-  "- ファイル: ./$ORIG_NAME" \
-  "" \
-  "この1本のみを処理せよ．")"
 AUX_DESC=""
-WORK_PDF=""
-# 自動は inbox から確保し，改名して PAPER_ROOT へ移す
 STEP_LIST="page complete rename move"
 
-# アトミックな mv で確保する．他のプロセスに先を越されていれば mv が失敗するので，
-# 何もせず終了する（二重処理の防止）．
+# ① 確保する．move_into は配置ロックの中で空き名を決めてから mv するので，
+# 同名が既に in_progress にあれば _2 に逃がし，同じファイルを2プロセスが
+# 取り合った場合は負けた側の mv が失敗する．
 prepare_target() {
-  WORK_PDF="$WORK_DIR/$ORIG_NAME"
-  if ! mv "$INBOX_PATH" "$WORK_PDF" 2>/dev/null; then
+  local dest
+  if ! dest="$(move_into "$INBOX_PATH" "$PAPER_IN_PROGRESS_DIR")"; then
     log_msg "確保できなかった（他のプロセスが処理中か，既に処理済み）"
     return 1
   fi
-  log_msg "作業ディレクトリへ確保した: $ORIG_NAME"
+  TARGET_PATH="$dest"
+  TARGET_LABEL="$(basename "$dest")"
+
+  # in_progress はパスが安定しているため，処理中のファイルに人が ref をかけうる．
+  # 手動と同じ札を立てて，同じ資料への二重処理を防ぐ．
+  LOCK_PATH="$(target_lock_path file "$TARGET_PATH")"
+  if ! acquire_lock "$LOCK_PATH" 1; then
+    log_msg "この資料は既に処理中である: $TARGET_LABEL"
+    LOCK_PATH=""
+    return 1
+  fi
+
+  TARGET_DESC="$(printf '%s\n' \
+    "- 種別: PDFファイル" \
+    "- ファイル: ./$TARGET_LABEL" \
+    "- このファイルは作業ディレクトリ内のコピーである．" \
+    "" \
+    "この1本のみを処理せよ．")"
+
+  # ② 以降は手動と同じ．コピーだけを AI に見せ，原本には触れさせない．
+  cp "$TARGET_PATH" "$WORK_DIR/$TARGET_LABEL" || return 1
+  log_msg "作業ディレクトリへコピーした: $TARGET_LABEL"
   return 0
 }
 
-# 解析が失敗したときは failed/ へ退避する．inbox に残すと次の変化で再処理され，
-# 失敗を繰り返す．登録が済んでいる場合も inbox へは戻さない（重複登録になる）．
+# ②の改名（手動と共有）に続けて，③ PAPER_ROOT へ出す．
+# 改名できなかった場合も in_progress に残すだけで，どこへも動かさない．
 place_result() {  # <解析が成功なら1>
-  local ok="$1" renamed dest
-  PLACEMENT=""
+  local dest
+  place_in_place "$1" || return 0
 
-  if [ "$ok" != "1" ]; then
-    dest="$(move_into "$WORK_PDF" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" || true)"
-    PLACEMENT="${dest:-$WORK_PDF}（退避した）"
-    return 0
-  fi
-
-  if ! renamed="$(rename_to_key "$WORK_PDF" "$CITATION_KEY")"; then
-    dest="$(move_into "$WORK_PDF" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" || true)"
-    PLACEMENT="${dest:-$WORK_PDF}（改名できなかった）"
-    ERROR_MESSAGE="改名に失敗した（Citation Key: ${CITATION_KEY}）"
-    return 0
-  fi
-  step_ok rename
-
-  if dest="$(move_into "$renamed" "$PAPER_ROOT")"; then
+  if dest="$(move_into "$RENAMED_PATH" "$PAPER_ROOT")"; then
     step_ok move
     PLACEMENT="${ORIG_NAME} → $(basename "$dest")"
     return 0
   fi
-
-  # 移動だけが残った状態．改名後の名前のまま failed/ へ置く．
-  # 作業ディレクトリに残すと保存期間で消えてしまう．
-  dest="$(move_into "$renamed" "$PAPER_FAILED_DIR" || true)"
-  PLACEMENT="${dest:-$renamed} → ${PAPER_ROOT}/ へ移してください"
+  PLACEMENT="${RENAMED_PATH} → ${PAPER_ROOT}/ へ移してください"
   ERROR_MESSAGE="${PAPER_ROOT} への移動に失敗した"
   return 0
 }

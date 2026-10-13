@@ -21,7 +21,9 @@ load_env() {
   # しかもエラーを出さず「対象なし」として終わる（実測で確認済み）．
   PAPER_ROOT="${PAPER_ROOT:-$HOME/Research/Papers}"
   PAPER_INBOX_DIR="${PAPER_INBOX_DIR:-$PAPER_ROOT/inbox}"
-  PAPER_FAILED_DIR="${PAPER_FAILED_DIR:-$PAPER_ROOT/failed}"
+  # 自動が inbox から取り込んだファイルの置き場．root へ出るまでここに居る．
+  # 失敗したものもここに残る（inbox へ戻すと再処理で失敗を繰り返す）．
+  PAPER_IN_PROGRESS_DIR="${PAPER_IN_PROGRESS_DIR:-$PAPER_ROOT/in_progress}"
   PAPER_WORK_DIR="${PAPER_WORK_DIR:-$PAPER_ROOT/.work}"
   PAPER_LOG_DIR="${PAPER_LOG_DIR:-$PAPER_ROOT/.logs}"
   PAPER_ENGINE="${PAPER_ENGINE:-claude}"
@@ -63,7 +65,7 @@ load_env() {
   . "$REPO_ROOT/lib/cleanup.sh"
   . "$REPO_ROOT/lib/run_one.sh"
 
-  mkdir -p "$PAPER_WORK_DIR" "$PAPER_LOG_DIR"
+  mkdir -p "$PAPER_WORK_DIR" "$PAPER_LOG_DIR" "$PAPER_IN_PROGRESS_DIR"
 }
 
 # ---------------------------------------------------------------- 小道具
@@ -214,11 +216,11 @@ release_slot() {
 
 # 1資料の処理は，次のステップの連なりである．
 #
-#   （確保）     対象を作業ディレクトリへ用意する
+#   （確保）     自動のみ．inbox から in_progress へ移す
 #   page        Notion ページを作成した       判定: notion_url が非空（AI）
 #   complete    ページを完成させた             判定: status == success（AI）
 #   rename      Citation Key へ改名した        判定: rename_to_key（シェル）
-#   move        PAPER_ROOT へ移動した          判定: move_into（シェル）
+#   move        自動のみ．PAPER_ROOT へ移した  判定: move_into（シェル）
 #
 # 各ステップは ok（完了）か未完了のどちらかで，全体の成否は
 # 「全ステップが ok か」だけで決まる．途中で止まったのか着手して失敗したのかは

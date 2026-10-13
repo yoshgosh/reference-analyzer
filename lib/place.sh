@@ -2,12 +2,14 @@
 # 配置：改名と移動
 #
 # ユーザーのファイルに触る処理はこのファイルだけに閉じている．
-# 一意な名前の決定は「最終的な置き場所に着地させる関数」が行う．
-#   手動 … rename_to_key が原本のディレクトリ内で解決する（最終形はここで決まる）
-#   自動 … 作業ディレクトリ内で rename_to_key（衝突しない）→ move_into が PAPER_ROOT で解決する
+# 一意な名前の決定は「着地させる関数」が行い，配置ロックを取って
+# 「空き名の確認」と「実際の移動」の間に別プロセスが割り込まないようにする．
 #
-# どちらも配置ロックを取り，「空き名の確認」と「実際の移動」の間に
-# 別プロセスが割り込まないようにする．
+# 対象を改名する処理（place_in_place）は両経路で共有する．
+#   手動 … 原本をその場で改名して終わり（移動しない）
+#   自動 … in_progress のファイルを改名し，続けて move_into で PAPER_ROOT へ出す
+#
+# ユーザーのファイルは作業ディレクトリに入らない．入るのはコピーだけである．
 
 # 空いているパスを返す（同名があれば _2, _3 …）
 unique_path() {  # <ディレクトリ> <基本名> <拡張子>
@@ -71,5 +73,34 @@ move_into() {  # <パス> <移動先ディレクトリ> [基本名を差し替�
   fi
   release_lock "$lock"
   log_msg "移動に失敗した: $src -> $dir"
+  return 1
+}
+
+# 対象（TARGET_PATH）をその場で <CitationKey>.<拡張子> に改名する．移動はしない．
+# 両経路が共有する．自動では確保後の in_progress のファイルが対象になる．
+#
+# 返り値 0 … 改名した（URL のときも 0．改名する対象が無い）
+#        1 … 改名していない
+# 改名後のパスは RENAMED_PATH に入れる．
+place_in_place() {  # <解析が成功なら1>
+  local ok="$1" dest
+  RENAMED_PATH=""
+
+  if [ "$TARGET_KIND" = url ]; then
+    PLACEMENT=""
+    return 0
+  fi
+  if [ "$ok" != "1" ]; then
+    PLACEMENT="${TARGET_PATH}（改名していない）"
+    return 1
+  fi
+  if dest="$(rename_to_key "$TARGET_PATH" "$CITATION_KEY")"; then
+    step_ok rename
+    RENAMED_PATH="$dest"
+    PLACEMENT="${TARGET_LABEL} → $(basename "$dest")"
+    return 0
+  fi
+  PLACEMENT="${TARGET_PATH}（改名できなかった）"
+  ERROR_MESSAGE="改名に失敗した（元: ${TARGET_PATH}）"
   return 1
 }

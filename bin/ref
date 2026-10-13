@@ -10,6 +10,7 @@
 #
 # 対象がPDFの場合，成功するとそのPDFを Citation Key に改名する．移動はしない．
 # 失敗した場合は元のファイルに一切触らない．
+# inbox 配下のファイルは指定できない（自動処理の持ち場である）．
 #
 # macOS 標準の bash 3.2 で動くように書いている．
 set -euo pipefail
@@ -18,7 +19,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/lib/core.sh"
 
 usage() {
-  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -74,6 +75,14 @@ case "$TARGET" in
     TARGET_KIND=file
     TARGET_PATH="$(cd "$(dirname "$TARGET")" && pwd)/$(basename "$TARGET")"
     TARGET_LABEL="$(basename "$TARGET_PATH")"
+    # inbox は自動処理の持ち場である．ここを手動で指すと，自動が確保のために
+    # mv した瞬間に対象が消える（ロックの取得順も経路間で逆になる）．
+    case "$TARGET_PATH" in
+      "$PAPER_INBOX_DIR"/*)
+        echo "inbox のファイルは指定できない: $TARGET_LABEL" >&2
+        echo "inbox は自動処理の持ち場である．自動の完了を待つか，外に出してから指定せよ．" >&2
+        exit 2 ;;
+    esac
     # 手動は原本をその場で改名するだけで，移動はしない
     STEP_LIST="page complete rename"
     ;;
@@ -184,27 +193,14 @@ prepare_target() {
   return 0
 }
 
-# 成功した場合のみ，原本をその場で改名する（移動はしない）．
+# 原本をその場で改名するだけで，移動はしない（place_in_place が共有の本体）．
 # 失敗した場合は原本に触らない．
 place_result() {  # <解析が成功なら1>
-  local ok="$1" dest
-  PLACEMENT=""
-
-  if [ "$TARGET_KIND" = url ]; then
-    return 0
+  place_in_place "$1" || return 0
+  if [ -n "$RENAMED_PATH" ]; then
+    PLACEMENT="${TARGET_LABEL} → $(basename "$RENAMED_PATH")（$(dirname "$RENAMED_PATH") に据え置き）"
+    FINAL_PATH="$RENAMED_PATH"
   fi
-  if [ "$ok" != "1" ]; then
-    PLACEMENT="${TARGET_PATH}（改名していない）"
-    return 0
-  fi
-  if dest="$(rename_to_key "$TARGET_PATH" "$CITATION_KEY")"; then
-    step_ok rename
-    PLACEMENT="${TARGET_LABEL} → $(basename "$dest")（$(dirname "$dest") に据え置き）"
-    FINAL_PATH="$dest"
-    return 0
-  fi
-  PLACEMENT="${TARGET_PATH}（改名できなかった）"
-  ERROR_MESSAGE="改名に失敗した（元: ${TARGET_PATH}）"
   return 0
 }
 
