@@ -5,7 +5,8 @@
 # 経路ごとに違うのは次の2つの関数だけで，呼び出し側が定義して差し替える．
 #
 #   prepare_target   対象を作業ディレクトリへ用意する（手動=コピー／自動=mv で確保）
-#                    失敗したら 1 を返す．その場合は記録も通知もせず静かに終わる．
+#                    成功したら自動は step_ok claim を記録する．
+#                    失敗したら ERROR_MESSAGE を設定して 1 を返す．
 #   place_result     結果に応じてファイルを配置する（手動=原本を改名／自動=改名して移動）
 #                    引数は解析が成功なら 1．できたステップを step_ok で記録し，
 #                    人に見せる1行を PLACEMENT に設定する．返り値は見ない．
@@ -25,25 +26,26 @@ place_result()   { PLACEMENT=""; return 0; }
 
 run_one() {
   local analyzed=0
+  PLACEMENT=""
 
   # 枠は「1資源を処理する許可」である．先に取るので，待っているプロセスは
   # 対象ファイルを掴まない．これが唯一の同時実行の制御点である．
   acquire_slot || true
   begin_run "$TARGET_KIND"
 
-  if ! prepare_target; then
-    log_msg "対象を用意できなかった．何もせず終了する"
-    release_slot
-    discard_run_dirs
-    return 0
-  fi
-
-  # 開始の通知は枠を取得した後に出す（待機中のものは出さない）
+  # 開始の通知は枠を取得した直後に出す（待機中のものは出さない）．
+  # 対象の用意より前に出すので，用意に失敗したことも通知できる．
   notify_start "$TARGET_LABEL"
 
-  analyze "$TARGET_DESC" "${AUX_DESC:-}" && analyzed=1
+  if ! prepare_target; then
+    if [ -z "${ERROR_MESSAGE:-}" ]; then ERROR_MESSAGE="対象を用意できなかった"; fi
+    log_msg "未完了: $ERROR_MESSAGE"
+    notify_result
+    release_slot
+    return 1
+  fi
 
-  PLACEMENT=""
+  analyze "$TARGET_DESC" "${AUX_DESC:-}" && analyzed=1
   place_result "$analyzed"
 
   save_records

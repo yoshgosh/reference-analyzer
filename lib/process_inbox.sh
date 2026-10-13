@@ -8,7 +8,7 @@
 #
 # 自動は「手動と同じ処理」の前後に移動を1回ずつ足したものである．
 #
-#   ① inbox → in_progress へ確保する（mv の原子性が自動どうしの排他になる）
+#   ① inbox → in_progress へ確保する（mv の原子性が自動どうしの排他になる．ステップ claim）
 #   ② in_progress のファイルに対して手動と同じ処理を行う
 #      （コピーだけを AI に見せ，最後にその場で改名する）
 #   ③ in_progress → PAPER_ROOT へ出す
@@ -40,7 +40,7 @@ RUN_MODE=auto
 TARGET_KIND=file
 TARGET_LABEL="$ORIG_NAME"
 AUX_DESC=""
-STEP_LIST="page complete rename move"
+STEP_LIST="claim page complete rename move"
 
 # ① 確保する．move_into は配置ロックの中で空き名を決めてから mv するので，
 # 同名が既に in_progress にあれば _2 に逃がし，同じファイルを2プロセスが
@@ -48,18 +48,20 @@ STEP_LIST="page complete rename move"
 prepare_target() {
   local dest
   if ! dest="$(move_into "$INBOX_PATH" "$PAPER_IN_PROGRESS_DIR")"; then
-    log_msg "確保できなかった（他のプロセスが処理中か，既に処理済み）"
+    ERROR_MESSAGE="inbox から取り込めなかった（他のプロセスが先に取ったか，ファイルが無くなった）"
     return 1
   fi
   TARGET_PATH="$dest"
   TARGET_LABEL="$(basename "$dest")"
+  step_ok claim
 
   # in_progress はパスが安定しているため，処理中のファイルに人が ref をかけうる．
   # 手動と同じ札を立てて，同じ資料への二重処理を防ぐ．
   LOCK_PATH="$(target_lock_path file "$TARGET_PATH")"
   if ! acquire_lock "$LOCK_PATH" 1; then
-    log_msg "この資料は既に処理中である: $TARGET_LABEL"
     LOCK_PATH=""
+    ERROR_MESSAGE="この資料は既に処理中である"
+    PLACEMENT="${TARGET_PATH}（in_progress に置いたまま終了した）"
     return 1
   fi
 
@@ -71,7 +73,10 @@ prepare_target() {
     "この1本のみを処理せよ．")"
 
   # ② 以降は手動と同じ．コピーだけを AI に見せ，原本には触れさせない．
-  cp "$TARGET_PATH" "$WORK_DIR/$TARGET_LABEL" || return 1
+  if ! cp "$TARGET_PATH" "$WORK_DIR/$TARGET_LABEL"; then
+    ERROR_MESSAGE="作業ディレクトリへコピーできなかった"
+    return 1
+  fi
   log_msg "作業ディレクトリへコピーした: $TARGET_LABEL"
   return 0
 }

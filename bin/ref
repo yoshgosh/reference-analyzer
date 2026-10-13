@@ -178,7 +178,10 @@ trap cleanup_on_exit EXIT
 prepare_target() {
   local f dest
   if [ "$TARGET_KIND" = file ]; then
-    cp "$TARGET_PATH" "$WORK_DIR/$TARGET_LABEL" || return 1
+    if ! cp "$TARGET_PATH" "$WORK_DIR/$TARGET_LABEL"; then
+      ERROR_MESSAGE="作業ディレクトリへコピーできなかった: $TARGET_PATH"
+      return 1
+    fi
     log_msg "作業ディレクトリへコピーした: $TARGET_LABEL"
   fi
   if [ "$AUX_COUNT" -gt 0 ]; then

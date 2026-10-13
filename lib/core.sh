@@ -216,7 +216,7 @@ release_slot() {
 
 # 1資料の処理は，次のステップの連なりである．
 #
-#   （確保）     自動のみ．inbox から in_progress へ移す
+#   claim       自動のみ．inbox から in_progress へ移した 判定: prepare_target（シェル）
 #   page        Notion ページを作成した       判定: notion_url が非空（AI）
 #   complete    ページを完成させた             判定: status == success（AI）
 #   rename      Citation Key へ改名した        判定: rename_to_key（シェル）
@@ -226,12 +226,9 @@ release_slot() {
 # 「全ステップが ok か」だけで決まる．途中で止まったのか着手して失敗したのかは
 # ERROR_MESSAGE が示すので，ステップ側では区別しない．
 #
-# 確保は通知に出さない．失敗した場合は二重処理を避けるため通知せず終了するので，
-# 通知に現れる場面では必ず完了している．
-#
 # STEP_LIST は経路が宣言する（手動=ファイル: page complete rename ／
-# 手動=URL: page complete ／ 自動: page complete rename move）．
-STEP_LIST="${STEP_LIST:-page complete rename move}"
+# 手動=URL: page complete ／ 自動: claim page complete rename move）．
+STEP_LIST="${STEP_LIST:-claim page complete rename move}"
 
 step_ok() {  # <ステップ名>
   eval "STEPSTATE_$1=ok"
@@ -306,12 +303,6 @@ begin_run() {  # <対象の種別（file | url）>
   else
     GUARD_WARNING=""
   fi
-}
-
-discard_run_dirs() {
-  [ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR" ] && rm -rf "$WORK_DIR"
-  [ -n "${RECORD_DIR:-}" ] && [ -d "$RECORD_DIR" ] && rm -rf "$RECORD_DIR"
-  return 0
 }
 
 cleanup_work_dir() {  # 成功時のみ呼ぶ

@@ -127,6 +127,7 @@ run_footer() {
 # ステップの行．経路に存在するステップだけを STEP_LIST の順に出す．
 step_label() {  # <ステップ名>
   case "$1" in
+    claim)    printf '取り込み' ;;
     page)     printf 'ページ作成' ;;
     complete) printf 'ページ完成' ;;
     rename)   printf '改名' ;;
