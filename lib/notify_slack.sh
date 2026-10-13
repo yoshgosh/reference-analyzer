@@ -7,11 +7,14 @@
 # Incoming Webhook は使わない．応答が "ok" という文字列だけで，
 # 書き換えに必要な ts を返さないためである（実測で確認済み）．
 #
-# 終端は4状態あり，必要な作業が異なるため見た目で区別する．
-#   ✅ 完了      status=success ＋ 配置成功        → 作業なし
-#   ❌ 失敗      status=failed  ＋ notion_url 空   → 直して再実行できる
-#   ⚠️ 要補修    status=failed  ＋ notion_url あり → 手で補修（再実行は重複登録になる）
-#   ⚠️ 要配置    status=success ＋ 配置失敗        → ファイルを手で移動するだけ
+# 終端は2つしかない．全ステップが完了したら ✅，ひとつでも欠けたら ❌ である．
+# 何が残っているかはステップの行が示すので，状態に名前を付けて区別しない．
+#
+#   ✅ 完了   全ステップ ok                     → 作業なし
+#   ❌ 失敗   ひとつ以上が未完了                → ステップの行を見て対処する
+#
+# ❌ のうち，page と complete が ok でファイル側だけが欠けている場合は，
+# AI の再実行は不要で，ファイルを動かすだけで終わる．
 #
 # 送信に失敗しても処理全体は失敗扱いにしない（ログに記録するのみ）．
 # トークンをログや通知本文に出力しない．
@@ -121,58 +124,77 @@ run_footer() {
     "$PAPER_ENGINE" "$PAPER_MODEL" "$PAPER_EFFORT" "$(elapsed)" "$RUN_ID"
 }
 
-# 空のときに非ゼロを返すと，コマンド置換が set -e で処理を止めてしまう
-guard_line() {
-  [ -n "${GUARD_WARNING:-}" ] && printf '\n• :warning: %s' "$GUARD_WARNING"
-  return 0
+# ステップの行．経路に存在するステップだけを STEP_LIST の順に出す．
+step_label() {  # <ステップ名>
+  case "$1" in
+    page)     printf 'ページ作成' ;;
+    complete) printf 'ページ完成' ;;
+    rename)   printf '改名' ;;
+    move)     printf '移動' ;;
+    *)        printf '%s' "$1" ;;
+  esac
 }
 
-# ✅ 完了
-notify_done() {  # <配置結果の説明>
-  local placement="$1" text
-  text="$(printf '%s\n' \
-    ":white_check_mark: *完了*（$(mode_label)） — ${TITLE:-（タイトル不明）}" \
-    "• Citation Key: \`${CITATION_KEY}\`" \
-    "• Notion: ${NOTION_URL:-（URLなし）}" \
-    "• ファイル: ${placement:-（なし）}" \
-    "$(run_footer)")$(guard_line)"
-  slack_finish "$text"
+step_line() {
+  local s out="" mark
+  for s in $STEP_LIST; do
+    if [ "$(step_state "$s")" = ok ]; then
+      mark=':white_check_mark:'
+    else
+      mark=':x:'
+    fi
+    out="${out}${out:+  }$(step_label "$s") ${mark}"
+  done
+  printf '%s' "$out"
 }
 
-# ❌ 失敗（ページ未作成）— 直して再実行できる
-notify_failed() {  # <対象の表示名>
-  local target="$1" text
-  text="$(printf '%s\n' \
-    ":x: *失敗*（$(mode_label)） — ${target}" \
-    "• 理由: ${ERROR_MESSAGE:-（不明）}" \
-    "• Notion: ページ未作成 — 直して再実行できます" \
-    "$(run_footer)" \
-    "• ログ: ${RECORD_DIR}")$(guard_line)"
-  slack_finish "$text"
+# Notion の行．再実行の前に既存ページを消す必要があるかどうかを示す．
+notion_line() {
+  if [ -z "${NOTION_URL:-}" ]; then
+    printf 'ページ未作成 — そのまま再実行できます'
+  elif [ "$(step_state complete)" = ok ]; then
+    printf '%s' "$NOTION_URL"
+  else
+    printf '%s ← 既存ページ．削除してから再実行' "$NOTION_URL"
+  fi
 }
 
-# ⚠️ 要補修（ページは作成済みだが不完全）— 再実行すると重複する
-notify_needs_repair() {  # <対象の表示名> <ファイルの現在地>
-  local target="$1" where="$2" text
-  text="$(printf '%s\n' \
-    ":warning: *要補修*（$(mode_label)） — ${TITLE:-$target}" \
-    "• 理由: ${ERROR_MESSAGE:-（不明）}" \
-    "• Notion: ${NOTION_URL}  ← ページは作成済み．再実行すると重複します" \
-    "• ファイル: ${where:-（なし）}" \
-    "$(run_footer)" \
-    "• ログ: ${RECORD_DIR}")$(guard_line)"
-  slack_finish "$text"
-}
+# 結果の通知（開始通知を書き換える）
+notify_result() {
+  local body
 
-# ⚠️ 要配置（登録は完了したがファイルの配置に失敗）— 手で移動するだけ
-notify_needs_placement() {  # <ファイルの現在地>
-  local where="$1" text
-  text="$(printf '%s\n' \
-    ":warning: *要配置*（$(mode_label)） — ${TITLE:-（タイトル不明）}" \
-    "• Citation Key: \`${CITATION_KEY}\`" \
-    "• Notion: ${NOTION_URL}（登録は完了）" \
-    "• ファイル: 配置に失敗しました．現在地: ${where}" \
-    "$(run_footer)" \
-    "• ログ: ${RECORD_DIR}")$(guard_line)"
-  slack_finish "$text"
+  if steps_all_ok; then
+    body=":white_check_mark: *完了*（$(mode_label)） — ${TITLE:-$TARGET_LABEL}"
+  else
+    body=":x: *失敗*（$(mode_label)） — ${TITLE:-$TARGET_LABEL}"
+  fi
+  body="${body}
+$(step_line)"
+
+  if ! steps_all_ok && [ -n "${ERROR_MESSAGE:-}" ]; then
+    body="${body}
+• 理由: ${ERROR_MESSAGE}"
+  fi
+  if [ -n "${CITATION_KEY:-}" ]; then
+    body="${body}
+• Citation Key: \`${CITATION_KEY}\`"
+  fi
+  body="${body}
+• Notion: $(notion_line)"
+  if [ -n "${PLACEMENT:-}" ]; then
+    body="${body}
+• ファイル: ${PLACEMENT}"
+  fi
+  body="${body}
+$(run_footer)"
+  if ! steps_all_ok; then
+    body="${body}
+• ログ: ${RECORD_DIR}"
+  fi
+  if [ -n "${GUARD_WARNING:-}" ]; then
+    body="${body}
+• :warning: ${GUARD_WARNING}"
+  fi
+
+  slack_finish "$body"
 }

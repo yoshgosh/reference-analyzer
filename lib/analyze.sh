@@ -92,6 +92,10 @@ json.dump({"status": "failed", "citation_key": "", "title": "",
 ' "$RESULT_JSON" "${engine_error:-$ERROR_MESSAGE}" "$NOTION_URL" 2>/dev/null || true
   fi
 
+  # AI が担うステップを記録する．判定はこの2つの出力項目だけで足りる．
+  if [ -n "$NOTION_URL" ]; then step_ok page; fi
+  if [ "$RESULT_STATUS" = "success" ]; then step_ok complete; fi
+
   # 成功の定義：終了コード0，status=success，正規化後の citation_key が妥当
   if [ "$ENGINE_RC" = "0" ] && [ "$RESULT_STATUS" = "success" ] && key_is_sane "$CITATION_KEY"; then
     [ -n "${GUARD_WARNING:-}" ] && log_msg "注意: 成功したが混入ガードの警告がある: ${GUARD_WARNING}"

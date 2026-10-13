@@ -33,6 +33,8 @@ TARGET_DESC="$(printf '%s\n' \
   "この1本のみを処理せよ．")"
 AUX_DESC=""
 WORK_PDF=""
+# 自動は inbox から確保し，改名して PAPER_ROOT へ移す
+STEP_LIST="page complete rename move"
 
 # アトミックな mv で確保する．他のプロセスに先を越されていれば mv が失敗するので，
 # 何もせず終了する（二重処理の防止）．
@@ -46,30 +48,37 @@ prepare_target() {
   return 0
 }
 
-# 成功: 作業ディレクトリ内で改名してから PAPER_ROOT へ移動する（着地時に一意化される）
-# 失敗: failed/ へ退避する．inbox に残すと次の変化で再処理され，失敗を繰り返す．
+# 解析が失敗したときは failed/ へ退避する．inbox に残すと次の変化で再処理され，
+# 失敗を繰り返す．登録が済んでいる場合も inbox へは戻さない（重複登録になる）．
 place_result() {  # <解析が成功なら1>
   local ok="$1" renamed dest
+  PLACEMENT=""
 
-  if [ "$ok" = "1" ]; then
-    # 作業ディレクトリ内で改名してから PAPER_ROOT へ移動する（着地時に一意化される）
-    if renamed="$(rename_to_key "$WORK_PDF" "$CITATION_KEY")" \
-       && dest="$(move_into "$renamed" "$PAPER_ROOT")"; then
-      PLACEMENT="${ORIG_NAME} → $(basename "$dest")"
-      PLACED_AT="$dest"
-      return 0
-    fi
-    # 登録は済んでいる．inbox へ戻すと再処理で重複登録になるため failed/ へ退避する．
-    dest="$(move_into "${renamed:-$WORK_PDF}" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" || true)"
-    PLACED_AT="${dest:-${renamed:-$WORK_PDF}}"
-    ERROR_MESSAGE="${PAPER_ROOT} への配置に失敗した"
-    return 1
+  if [ "$ok" != "1" ]; then
+    dest="$(move_into "$WORK_PDF" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" || true)"
+    PLACEMENT="${dest:-$WORK_PDF}（退避した）"
+    return 0
   fi
 
-  # 解析が失敗．inbox に残すと次の変化で再処理され，失敗を繰り返す．
-  dest="$(move_into "$WORK_PDF" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" || true)"
-  PLACED_AT="${dest:-$WORK_PDF}"
-  PLACEMENT=""
+  if ! renamed="$(rename_to_key "$WORK_PDF" "$CITATION_KEY")"; then
+    dest="$(move_into "$WORK_PDF" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" || true)"
+    PLACEMENT="${dest:-$WORK_PDF}（改名できなかった）"
+    ERROR_MESSAGE="改名に失敗した（Citation Key: ${CITATION_KEY}）"
+    return 0
+  fi
+  step_ok rename
+
+  if dest="$(move_into "$renamed" "$PAPER_ROOT")"; then
+    step_ok move
+    PLACEMENT="${ORIG_NAME} → $(basename "$dest")"
+    return 0
+  fi
+
+  # 移動だけが残った状態．改名後の名前のまま failed/ へ置く．
+  # 作業ディレクトリに残すと保存期間で消えてしまう．
+  dest="$(move_into "$renamed" "$PAPER_FAILED_DIR" || true)"
+  PLACEMENT="${dest:-$renamed} → ${PAPER_ROOT}/ へ移してください"
+  ERROR_MESSAGE="${PAPER_ROOT} への移動に失敗した"
   return 0
 }
 

@@ -210,6 +210,52 @@ release_slot() {
   log_msg "同時実行の枠を解放した: ${name}"
 }
 
+# ---------------------------------------------------------------- ステップ
+
+# 1資料の処理は，次のステップの連なりである．
+#
+#   （確保）     対象を作業ディレクトリへ用意する
+#   page        Notion ページを作成した       判定: notion_url が非空（AI）
+#   complete    ページを完成させた             判定: status == success（AI）
+#   rename      Citation Key へ改名した        判定: rename_to_key（シェル）
+#   move        PAPER_ROOT へ移動した          判定: move_into（シェル）
+#
+# 各ステップは ok（完了）か未完了のどちらかで，全体の成否は
+# 「全ステップが ok か」だけで決まる．途中で止まったのか着手して失敗したのかは
+# ERROR_MESSAGE が示すので，ステップ側では区別しない．
+#
+# 確保は通知に出さない．失敗した場合は二重処理を避けるため通知せず終了するので，
+# 通知に現れる場面では必ず完了している．
+#
+# STEP_LIST は経路が宣言する（手動=ファイル: page complete rename ／
+# 手動=URL: page complete ／ 自動: page complete rename move）．
+STEP_LIST="${STEP_LIST:-page complete rename move}"
+
+step_ok() {  # <ステップ名>
+  eval "STEPSTATE_$1=ok"
+}
+
+step_state() {  # <ステップ名>
+  eval "printf '%s' \"\${STEPSTATE_$1:-ng}\""
+}
+
+steps_all_ok() {
+  local s
+  for s in $STEP_LIST; do
+    [ "$(step_state "$s")" = ok ] || return 1
+  done
+  return 0
+}
+
+# ログ用．通知の表示は lib/notify_slack.sh の step_line が組み立てる．
+steps_log() {
+  local s out=""
+  for s in $STEP_LIST; do
+    out="${out}${out:+ }${s}=$(step_state "$s")"
+  done
+  printf '%s' "$out"
+}
+
 # ---------------------------------------------------------------- 混入ガード
 
 # 作業ディレクトリの祖先に CLAUDE.md があれば，そのパスを列挙する．
