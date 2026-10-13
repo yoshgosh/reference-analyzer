@@ -6,10 +6,8 @@
     "title": { "type": "string" },
     "notion_url": { "type": "string" },
     "rating": { "type": "string" },
-    "rating_reason": { "type": "string" },
-    "image_status": { "type": "string" },
     "error": { "type": "string" }
   },
-  "required": ["status", "citation_key", "title", "notion_url", "rating", "rating_reason", "image_status", "error"],
+  "required": ["status", "citation_key", "title", "notion_url", "rating", "error"],
   "additionalProperties": false
 }

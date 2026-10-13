@@ -37,6 +37,9 @@ load_env() {
   PAPER_AUX_MAX_BYTES="${PAPER_AUX_MAX_BYTES:-52428800}"   # 50MB
   PAPER_AUX_MAX_FILES="${PAPER_AUX_MAX_FILES:-100}"
 
+  # Slack は Web API のみを使う（Incoming Webhook は ts を返さず書き換えができない）
+  SLACK_API="${SLACK_API:-https://slack.com/api}"
+
   if [ -z "${NOTION_DATA_SOURCE_ID:-}" ]; then
     echo "reference-analyzer: NOTION_DATA_SOURCE_ID が未設定である（.env を確認せよ）" >&2
     return 1
@@ -233,7 +236,9 @@ new_run_id() {
   printf '%s-%s' "$(date '+%Y%m%d-%H%M%S')" "$$"
 }
 
-begin_run() {  # <mode の表示名>
+# RUN_MODE（auto | manual）は呼び出し側が設定する．
+# 実行記録と通知で自動・手動を区別するために必要である．
+begin_run() {  # <対象の種別（file | url）>
   RUN_ID="$(new_run_id)"
   WORK_DIR="$PAPER_WORK_DIR/$RUN_ID"
   RECORD_DIR="$PAPER_LOG_DIR/$RUN_ID"
@@ -242,7 +247,7 @@ begin_run() {  # <mode の表示名>
   : >"$RUN_LOG"
   STARTED_AT="$(date '+%s')"
 
-  log_msg "run_id=$RUN_ID engine=$PAPER_ENGINE model=$PAPER_MODEL effort=$PAPER_EFFORT mode=${1:-unknown}"
+  log_msg "run_id=$RUN_ID mode=${RUN_MODE:-unknown} kind=${1:-unknown} engine=$PAPER_ENGINE model=$PAPER_MODEL effort=$PAPER_EFFORT"
   log_msg "work_dir=$WORK_DIR"
 
   local stray

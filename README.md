@@ -54,12 +54,13 @@ bash で起動する全スクリプトが全ディスクへのアクセス権を
 ## 準備
 
 ```sh
-cp .env.example .env     # NOTION_DATA_SOURCE_ID と SLACK_WEBHOOK_URL を記入する
+cp .env.example .env     # NOTION_DATA_SOURCE_ID と SLACK_BOT_TOKEN / SLACK_CHANNEL を記入する
 ```
 
 必要なもの．
 
 - `claude` コマンド（PATH 上にあること）
+- Slack アプリの Bot トークン … **Incoming Webhook ではなく Web API を使う**（後述）
 - Notion MCP の認証 … `claude mcp add --transport http --scope user notion https://mcp.notion.com/mcp` の後，
   **対話モードの `/mcp` で OAuth 認証**（初回のみ・手動．非対話では認証できない）
 - poppler … `brew install poppler`（`pdftotext`, `pdfimages`, `pdftoppm`, `pdfinfo`）
@@ -300,6 +301,72 @@ launchd は同じジョブを二重に起動しないが，`scan_inbox.sh` と�
 同じ資料の二重処理は経路ごとに防ぐ．自動は作業ディレクトリへのアトミックな `mv` による確保，
 手動は原本を動かさないため実パスを鍵にしたロックで代替する．
 
+## Slack 通知
+
+1資料につき1メッセージである．枠を取得した直後に `⏳ 処理中` を投稿し，
+終了時に `chat.update` で**同じメッセージを書き換える**．チャンネルが流れない．
+
+Incoming Webhook は使えない．応答が `ok` という文字列だけで，
+書き換えに必要な `ts` を返さないためである（実測で確認済み）．
+
+```
+SLACK_BOT_TOKEN=xoxb-...      # Bot Token Scopes に chat:write
+SLACK_CHANNEL=C0C8ME3G3DJ     # チャンネルID を推奨
+```
+
+`SLACK_CHANNEL` はチャンネル名（`#name`）でも動くが，**IDを推奨する**．
+名前だと非公開チャンネルで使えず，名前の解決に `channels:read` スコープが
+追加で必要になり，チャンネル名を変えると壊れる．
+
+### 終端の4状態
+
+パイプラインのどこで失敗したかによって，人が取るべき作業が変わる．
+そのため終端を4つに分け，見た目で区別する．
+
+| 状態 | 判定 | 人が行うこと |
+|---|---|---|
+| ✅ 完了 | `success` ＋ 配置成功 | なし |
+| ❌ 失敗 | `failed` ＋ `notion_url` が空 | 直して**再実行**する |
+| ⚠️ 要補修 | `failed` ＋ `notion_url` あり | **手で補修**する．再実行すると2件目のページができる |
+| ⚠️ 要配置 | `success` ＋ 配置失敗 | **ファイルを手で移動**するだけ |
+
+### エンジン自身の失敗は区別して報告する
+
+利用上限（429）・認証切れ・ネットワーク障害は**資料の問題ではない**．
+`engine_raw.json` の `is_error` / `api_error_status` / `result` を見て，
+AI が資料を読んで `failed` と判断した場合と区別し，原因をそのまま通知に出す．
+
+```
+• 理由: 利用上限またはレート制限に達した（429） — You've hit your session limit · resets 10:40am (Asia/Tokyo)
+```
+
+これを入れる前は「AIの出力JSONを検証できなかった」と表示されるだけで，
+上限に達したことも回復時刻も分からなかった．判定は `lib/engine_claude.sh` の
+`engine_error_summary` にあり，エンジン固有なので engine 層に置いている．
+
+なお上限超過でもファイルは `failed/` へ移る．回復後に手で inbox へ戻す必要がある．
+
+`notion_url` が空かどうかが「再実行してよいか」を決める．
+そのため指示文では，ページを作成した後に `failed` となった場合も
+`notion_url` を必ず記録するよう求めている．
+
+## AI の最終出力
+
+```
+status        "success" | "failed"
+citation_key
+title
+notion_url    ページを作成したら failed でも必ず入れる
+rating
+error         失敗した段階と理由．成功時は空
+```
+
+`success` になるのは，Notion 登録が完了し，**かつ代表画像が入っている**場合のみである．
+図表が存在するのに入れられなければ `failed` とする（代表画像は要約の一部であり，
+入っていない登録を完了とはみなさない）．対象に図表がそもそも無ければ画像なしで `success`．
+
+この基準は HANDOVER §7.1（「画像の失敗は全体の失敗としない」）から変更している．
+
 ## 実行記録
 
 `PAPER_LOG_DIR/<run_id>/` に保存する（既定 7 日で削除）．
@@ -312,6 +379,7 @@ launchd は同じジョブを二重に起動しないが，`scan_inbox.sh` と�
 | `transcript.jsonl` | AI の実行記録（ツール呼び出しの全経過） |
 | `prompt.md` | 実際に渡した指示文 |
 | `engine.stderr` | エンジンの標準エラー出力 |
+| `slack_post.json` / `slack_update.json` | Slack API の応答（通知が届かない場合の調査用） |
 
 成功時は作業ディレクトリを削除し，失敗時は調査用に残す（保存期間の削除対象に含める）．
 `failed/` のPDF自体は保存期間では削除しない．
@@ -327,7 +395,8 @@ launchd は同じジョブを二重に起動しないが，`scan_inbox.sh` と�
 | 変数名 | 既定値 | 説明 |
 |---|---|---|
 | `NOTION_DATA_SOURCE_ID` | （必須） | 登録先データソースID |
-| `SLACK_WEBHOOK_URL` | （必須） | Slack Incoming Webhook URL．**秘密情報** |
+| `SLACK_BOT_TOKEN` | （必須） | Slack Bot トークン（`chat:write`）．**秘密情報** |
+| `SLACK_CHANNEL` | （必須） | 投稿先．チャンネルID を推奨 |
 | `PAPER_ROOT` | `$HOME/Research/Papers` | 処理済みPDFの保存先．他フォルダの基準 |
 | `PAPER_INBOX_DIR` | `$PAPER_ROOT/inbox` | 自動処理の置き場 |
 | `PAPER_FAILED_DIR` | `$PAPER_ROOT/failed` | 失敗したPDF |
@@ -358,6 +427,9 @@ Webhook URL はログや通知本文に出力しない．
 | §6.2 手動コマンド | PDFを inbox 経由にせず，その場で改名する | 「手動起動は移動させない」との決定による |
 | §8.2 多重起動 | 同時実行数をシステム全体の枠で抑える | `scan_inbox.sh` と手動コマンドは別プロセスで重なりうる |
 | §6.2 手動コマンド | 1コマンド1文献にし，`--with` で補助資料を添える | フォルダを「複数の文献」ではなく「同じ文献を補助する資料」として扱うため |
+| §7.1 画像の失敗 | 画像が入らなければ `failed` とする | 代表画像は要約の一部であり，入っていない登録を完了とはみなさない |
+| §7.4 出力スキーマ | 8項目 → 6項目（`rating_reason`・`image_status` を削除） | 前者はどこにも表示しておらず，後者は `status` と `error` で表せる |
+| §10 通知 | Webhook → Web API．1資料1メッセージを書き換える | Webhook は `ts` を返さず書き換えができない |
 
 ## 既知の制約
 

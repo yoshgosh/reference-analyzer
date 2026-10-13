@@ -66,6 +66,40 @@ EOF
   )
 }
 
+# エンジン自身の失敗（認証・利用上限・ネットワーク等）を人が読める形にまとめる．
+# AI が資料を読んで failed と判断した場合とは区別が必要で，こちらは資料の問題ではない．
+# 失敗していなければ空文字列を返す．
+engine_error_summary() {  # <生出力のパス>
+  local raw="$1" is_err status terminal result
+
+  if [ ! -s "$raw" ]; then
+    printf 'エンジンが出力を返さなかった'
+    return 0
+  fi
+
+  is_err="$(json_get "$raw" is_error)"
+  [ "$is_err" != "True" ] && return 0
+
+  status="$(json_get "$raw" api_error_status)"
+  terminal="$(json_get "$raw" terminal_reason)"
+  result="$(json_get "$raw" result)"
+
+  case "$status" in
+    429)
+      printf '利用上限またはレート制限に達した（429）'
+      ;;
+    4*|5*)
+      printf 'APIエラー（%s）' "$status"
+      ;;
+    *)
+      printf 'エンジンが異常終了した（terminal_reason=%s）' "${terminal:-不明}"
+      ;;
+  esac
+  # claude -p は result に人が読める説明を入れる（例: セッション上限の回復時刻）
+  [ -n "$result" ] && printf ' — %s' "$result"
+  return 0
+}
+
 engine_session_id() {  # <生出力のパス>
   json_get "$1" session_id
 }

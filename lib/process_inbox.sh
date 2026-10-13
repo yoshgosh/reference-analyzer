@@ -23,6 +23,7 @@ load_env || exit 1
 trap 'release_slot 2>/dev/null || true' EXIT
 
 ORIG_NAME="$(basename "$INBOX_PATH")"
+RUN_MODE=auto
 TARGET_KIND=file
 TARGET_LABEL="$ORIG_NAME"
 TARGET_DESC="$(printf '%s\n' \
@@ -47,22 +48,27 @@ prepare_target() {
 
 # 成功: 作業ディレクトリ内で改名してから PAPER_ROOT へ移動する（着地時に一意化される）
 # 失敗: failed/ へ退避する．inbox に残すと次の変化で再処理され，失敗を繰り返す．
-place_result() {  # <成功なら1>
+place_result() {  # <解析が成功なら1>
   local ok="$1" renamed dest
 
   if [ "$ok" = "1" ]; then
+    # 作業ディレクトリ内で改名してから PAPER_ROOT へ移動する（着地時に一意化される）
     if renamed="$(rename_to_key "$WORK_PDF" "$CITATION_KEY")" \
        && dest="$(move_into "$renamed" "$PAPER_ROOT")"; then
-      PLACEMENT="$(basename "$dest")"
+      PLACEMENT="${ORIG_NAME} → $(basename "$dest")"
+      PLACED_AT="$dest"
       return 0
     fi
-    # Notion 登録は済んでいる．inbox へ戻すと重複登録になるため failed/ へ退避する．
-    dest="$(move_into "$WORK_PDF" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" || true)"
-    ERROR_MESSAGE="Notion 登録は成功したが，${PAPER_ROOT} への配置に失敗した（現在地: ${dest:-$WORK_PDF}）"
+    # 登録は済んでいる．inbox へ戻すと再処理で重複登録になるため failed/ へ退避する．
+    dest="$(move_into "${renamed:-$WORK_PDF}" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" || true)"
+    PLACED_AT="${dest:-${renamed:-$WORK_PDF}}"
+    ERROR_MESSAGE="${PAPER_ROOT} への配置に失敗した"
     return 1
   fi
 
-  move_into "$WORK_PDF" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" >/dev/null || true
+  # 解析が失敗．inbox に残すと次の変化で再処理され，失敗を繰り返す．
+  dest="$(move_into "$WORK_PDF" "$PAPER_FAILED_DIR" "${RUN_ID}_${ORIG_NAME%.*}" || true)"
+  PLACED_AT="${dest:-$WORK_PDF}"
   PLACEMENT=""
   return 0
 }

@@ -57,6 +57,12 @@ analyze() {  # <対象の記述> <補助資料の記述>
   SESSION_ID="$(engine_session_id "$raw")"
   [ -n "$SESSION_ID" ] && log_msg "session_id=$SESSION_ID"
 
+  # エンジン自身が失敗した場合は，その理由を優先して報告する．
+  # 利用上限（429）などを「出力JSONの検証に失敗」として埋もれさせてはならない．
+  local engine_error
+  engine_error="$(engine_error_summary "$raw")"
+  [ -n "$engine_error" ] && log_msg "エンジンのエラー: $engine_error"
+
   RESULT_JSON="$RECORD_DIR/result.json"
   if py "$REPO_ROOT/lib/validate_result.py" \
       "$raw" "$REPO_ROOT/schema/result.schema.json" "$RESULT_JSON" 2>>"$RUN_LOG"; then
@@ -65,14 +71,19 @@ analyze() {  # <対象の記述> <補助資料の記述>
     TITLE="$(json_get "$RESULT_JSON" title)"
     NOTION_URL="$(json_get "$RESULT_JSON" notion_url)"
     RATING="$(json_get "$RESULT_JSON" rating)"
-    RATING_REASON="$(json_get "$RESULT_JSON" rating_reason)"
-    IMAGE_STATUS="$(json_get "$RESULT_JSON" image_status)"
     ERROR_MESSAGE="$(json_get "$RESULT_JSON" error)"
   else
     log_msg "出力JSONの検証に失敗した"
     RESULT_STATUS="failed"; CITATION_KEY=""; TITLE=""; NOTION_URL=""
-    RATING=""; RATING_REASON=""; IMAGE_STATUS=""
+    RATING=""
     ERROR_MESSAGE="AIの出力JSONを検証できなかった（記録: ${RECORD_DIR}）"
+    # 記録の形を揃えるため，検証できなかった場合も result.json を残す
+    py -c '
+import json, sys
+json.dump({"status": "failed", "citation_key": "", "title": "", "notion_url": "",
+           "rating": "", "error": sys.argv[2]},
+          open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+' "$RESULT_JSON" "${engine_error:-$ERROR_MESSAGE}" 2>/dev/null || true
   fi
 
   # 成功の定義：終了コード0，status=success，正規化後の citation_key が妥当
@@ -81,7 +92,10 @@ analyze() {  # <対象の記述> <補助資料の記述>
     return 0
   fi
 
-  if [ "$RESULT_STATUS" = "success" ] && ! key_is_sane "$CITATION_KEY"; then
+  # エンジン自身の失敗が最も上位の原因なので，これを優先する
+  if [ -n "$engine_error" ]; then
+    ERROR_MESSAGE="$engine_error"
+  elif [ "$RESULT_STATUS" = "success" ] && ! key_is_sane "$CITATION_KEY"; then
     ERROR_MESSAGE="citation_key が妥当でない（正規化後: \"$CITATION_KEY\" / 正規化前: \"$(json_get "$RESULT_JSON" citation_key)\"）．非ASCII名のローマ字化に失敗した可能性がある"
   fi
   [ -z "$ERROR_MESSAGE" ] && ERROR_MESSAGE="原因不明（終了コード=${ENGINE_RC} status=${RESULT_STATUS}）"

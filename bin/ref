@@ -53,6 +53,8 @@ load_env || exit 1
 
 # ---------------------------------------------------------------- 対象の判別
 
+RUN_MODE=manual
+
 case "$TARGET" in
   http://*|https://*)
     TARGET_KIND=url
@@ -180,19 +182,27 @@ prepare_target() {
 
 # 成功した場合のみ，原本をその場で改名する（移動はしない）．
 # 失敗した場合は原本に触らない．
-place_result() {  # <成功なら1>
+place_result() {  # <解析が成功なら1>
   local ok="$1" dest
-  PLACEMENT=""
-  if [ "$ok" != "1" ] || [ "$TARGET_KIND" != file ]; then
-    [ "$TARGET_KIND" = url ] && PLACEMENT="（URLのためファイルなし）"
+  PLACEMENT=""; PLACED_AT=""
+
+  if [ "$TARGET_KIND" = url ]; then
+    PLACEMENT="（URLのためファイルなし）"
+    return 0
+  fi
+  if [ "$ok" != "1" ]; then
+    # 失敗時は原本に触らない
+    PLACED_AT="$TARGET_PATH"
     return 0
   fi
   if dest="$(rename_to_key "$TARGET_PATH" "$CITATION_KEY")"; then
-    PLACEMENT="$(basename "$dest")（$(dirname "$dest") に据え置き）"
+    PLACEMENT="${TARGET_LABEL} → $(basename "$dest")（$(dirname "$dest") に据え置き）"
+    PLACED_AT="$dest"
     FINAL_PATH="$dest"
     return 0
   fi
-  ERROR_MESSAGE="Notion 登録は成功したが，改名に失敗した（元: ${TARGET_PATH}）"
+  PLACED_AT="$TARGET_PATH"
+  ERROR_MESSAGE="改名に失敗した（元: ${TARGET_PATH}）"
   return 1
 }
 

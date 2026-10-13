@@ -36,10 +36,10 @@ preflight() {
     ok=1
   fi
 
-  if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-    echo "  SLACK_WEBHOOK_URL : 設定あり"
+  if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_CHANNEL:-}" ]; then
+    echo "  Slack             : 設定あり（channel=${SLACK_CHANNEL}）"
   else
-    echo "  SLACK_WEBHOOK_URL : 未設定（通知は送られない）"
+    echo "  Slack             : 未設定（通知は送られない）"
   fi
 
   echo "  NOTION_DATA_SOURCE_ID : $NOTION_DATA_SOURCE_ID"
