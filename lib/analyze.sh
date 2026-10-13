@@ -77,13 +77,21 @@ analyze() {  # <対象の記述> <補助資料の記述>
     RESULT_STATUS="failed"; CITATION_KEY=""; TITLE=""; NOTION_URL=""
     RATING=""
     ERROR_MESSAGE="AIの出力JSONを検証できなかった（記録: ${RECORD_DIR}）"
+
+    # 構造化出力が無くてもページが作成済みであることはありうる．
+    # 存在するページを「未作成・再実行可」と通知すると重複登録になるため，
+    # transcript から URL を拾って通知の種類を正しく選べるようにする．
+    NOTION_URL="$(engine_find_notion_url "${SESSION_ID:-}")"
+    if [ -n "$NOTION_URL" ]; then
+      log_msg "transcript から作成済みページを検出した: $NOTION_URL"
+    fi
     # 記録の形を揃えるため，検証できなかった場合も result.json を残す
     py -c '
 import json, sys
-json.dump({"status": "failed", "citation_key": "", "title": "", "notion_url": "",
-           "rating": "", "error": sys.argv[2]},
+json.dump({"status": "failed", "citation_key": "", "title": "",
+           "notion_url": sys.argv[3], "rating": "", "error": sys.argv[2]},
           open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-' "$RESULT_JSON" "${engine_error:-$ERROR_MESSAGE}" 2>/dev/null || true
+' "$RESULT_JSON" "${engine_error:-$ERROR_MESSAGE}" "$NOTION_URL" 2>/dev/null || true
   fi
 
   # 成功の定義：終了コード0，status=success，正規化後の citation_key が妥当

@@ -104,14 +104,30 @@ engine_session_id() {  # <生出力のパス>
   json_get "$1" session_id
 }
 
-# Claude Code 自身が保存するセッションファイルを複製する．
+# Claude Code 自身が保存するセッションファイルの場所を返す．
 # 置き場所は ~/.claude/projects/<cwd のスラッグ>/<session_id>.jsonl である．
 # スラッグの規則に依存しないよう，session_id でファイル名を検索する．
+engine_transcript_path() {  # <session_id>
+  [ -n "$1" ] || return 0
+  find "$HOME/.claude/projects" -type f -name "$1.jsonl" 2>/dev/null | head -1
+}
+
 engine_save_transcript() {  # <作業ディレクトリ> <記録ディレクトリ> <session_id>
-  local record_dir="$2" sid="$3" src
-  [ -z "$sid" ] && return 1
-  src="$(find "$HOME/.claude/projects" -type f -name "$sid.jsonl" 2>/dev/null | head -1)"
+  local record_dir="$2" src
+  src="$(engine_transcript_path "$3")"
   [ -z "$src" ] && return 1
   cp "$src" "$record_dir/transcript.jsonl" || return 1
   return 0
+}
+
+# 作成された Notion ページのURLを transcript から探す．
+#
+# 構造化出力は最後にまとめて生まれるため，利用上限（429）などで途中切断されると
+# 得られない．しかしその時点でページが作成済みであることはありうる．
+# 存在するページを「未作成」と誤って通知すると，再実行で重複登録になる．
+engine_find_notion_url() {  # <session_id>
+  local src
+  src="$(engine_transcript_path "$1")"
+  [ -z "$src" ] && return 0
+  py "$REPO_ROOT/lib/find_notion_url.py" "$src" 2>/dev/null || true
 }

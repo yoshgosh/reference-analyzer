@@ -188,6 +188,7 @@ PAPER_EFFORT=medium   # low / medium / high / xhigh / max
   lib/engine_claude.sh    claude -p の呼び出し
   lib/notify_slack.sh     Slack 通知
   lib/validate_result.py  最終出力の検証と正規化
+  lib/find_notion_url.py  transcript から作成済みページのURLを探す
   lib/cleanup.sh          保存期間を過ぎた記録の削除
   launchd/install.sh      launchd エージェントの導入・解除・状態確認
 
@@ -349,6 +350,18 @@ AI が資料を読んで `failed` と判断した場合と区別し，原因を�
 `notion_url` が空かどうかが「再実行してよいか」を決める．
 そのため指示文では，ページを作成した後に `failed` となった場合も
 `notion_url` を必ず記録するよう求めている．
+
+### 構造化出力が得られなかった場合
+
+構造化出力は AI が最後にまとめて返すため，利用上限（429）などで途中切断されると
+得られない．**しかしその時点でページが作成済みであることはありうる．**
+
+存在するページを「未作成・再実行可」と通知すると，再実行で重複登録になる．
+そのため検証に失敗した場合は，`transcript.jsonl` に残る `notion-create-pages` の
+結果からURLを拾い，通知の種類を正しく選ぶ（`lib/find_notion_url.py`）．
+
+400 などで拒否された呼び出しは無視する（ページは作られていないため）．
+AI 側に手順を足していないので，AI が指示に従うかどうかに依存しない．
 
 ## AI の最終出力
 
