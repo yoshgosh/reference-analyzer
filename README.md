@@ -104,19 +104,19 @@ inbox は単体PDFのみで，補助資料は付けられない．
 | 対象の数 | 1コマンドに1つ（＋補助資料） | inbox にある全件 |
 | 補助資料 | 付けられる（`--with`） | 付けられない |
 | 配分の並列 | なし（1コマンド1プロセス） | あり |
-| 対象の確保 | コピー（原本は動かさない） | `inbox` → `in_progress` へ `mv` |
+| 対象の取り込み | コピー（原本は動かさない） | `inbox` → `in_progress` へ `mv` |
 | 成功時のファイル | **元の場所で改名するだけ**（移動しない） | 改名して `PAPER_ROOT` 直下へ移動 |
 | 失敗時のファイル | **触らない**（元のまま） | `in_progress` に元の名前で残る |
 
 **自動は「手動と同じ処理」の前後に移動を1回ずつ足したものである．**
 
 ```
-① inbox/paper.pdf → in_progress/paper.pdf         確保（mv）
+① inbox/paper.pdf → in_progress/paper.pdf         取り込み（mv）
 ② in_progress のファイルに対して手動と同じ処理      コピーを AI に見せ，最後にその場で改名
 ③ in_progress/<Key>.pdf → <Key>.pdf               直下へ出す（mv）
 ```
 
-そのため `place_in_place`（対象をその場で改名する）を両経路で共有し，
+そのため `rename_step`（対象をその場で改名する）を両経路で共有し，
 自動の `place_result` はそれを呼んでから `move_into` で直下へ出すだけになっている．
 
 **ユーザーのファイルは作業ディレクトリに入らない．入るのはコピーだけである．**
@@ -128,7 +128,7 @@ inbox は単体PDFのみで，補助資料は付けられない．
 失敗時に別の場所へ移すと驚きが大きく，再処理のループも起きない．
 
 **`bin/ref` は `inbox/` 配下のファイルを拒否する．** inbox は自動処理の持ち場で，
-手動で指すと自動が確保のために `mv` した瞬間に対象が消える．
+手動で指すと自動が取り込みのために `mv` した瞬間に対象が消える．
 
 ### inbox の取り込み条件
 
@@ -199,8 +199,8 @@ PAPER_EFFORT=medium   # low / medium / high / xhigh / max
 共有
   lib/run_one.sh          1資源の処理の流れ（骨格）
   lib/analyze.sh          プロンプト組立 → エンジン起動 → 出力検証
-  lib/place.sh            改名と移動
-  lib/core.sh             環境・ログ・ロック・同時実行の枠・混入ガード
+  lib/place.sh            改名と移動（ユーザーのファイルに触るのはここだけ）
+  lib/core.sh             環境・ログ・ロック・同時実行の枠・ステップ・混入ガード
 
 部品
   lib/engine_claude.sh    claude -p の呼び出し
@@ -225,7 +225,7 @@ PAPER_EFFORT=medium   # low / medium / high / xhigh / max
 ```
 run_one()
   枠を取る → 実行ディレクトリ作成 → 混入ガード → 開始を通知
-  → prepare_target   ← 経路ごと（手動=コピー／自動=mv で確保）
+  → prepare_target   ← 経路ごと（手動=コピー／自動=mv で取り込む）
   → analyze          ← 共有
   → place_result     ← 経路ごと（手動=その場で改名／自動=その場で改名 ＋ 直下へ移動）
   → 記録 → 通知 → 枠を解放 → 片付け
@@ -237,7 +237,7 @@ run_one()
 一意な名前の決定は「着地させる関数」が行う．手動は `rename_to_key` が原本の
 ディレクトリ内で解決する．自動は `in_progress` で `rename_to_key`，`PAPER_ROOT` で
 `move_into` がそれぞれ解決するので，直下に同名があれば最終的に `<Key>_2.pdf` になる．
-確保のときも `move_into` を使うため，`in_progress` に同名が居れば `paper_2.pdf` に逃がす．
+取り込みのときも `move_into` を使うため，`in_progress` に同名が居れば `paper_2.pdf` に逃がす．
 
 エンジン差分は `lib/engine_<名前>.sh` に閉じているので，
 Codex 対応は共有部分に手を入れずに追加できる．
@@ -303,11 +303,11 @@ Codex 対応は共有部分に手を入れずに追加できる．
 .work/.locks/slots/slot-1, slot-2, …   ← mkdir のアトミック性で排他する．中に PID を書く
 ```
 
-枠は「**1資源を処理する許可**」である．取得してから対象を確保するので，
+枠は「**1資源を処理する許可**」である．取得してから対象を取り込むので，
 待っているプロセスはファイルを掴まない．
 
 **この順序は入れ替えてはならない．** 待機中に異常終了したとき，
-ファイルが inbox に残っていれば次の `RunAtLoad` で拾われる．先に確保していると
+ファイルが inbox に残っていれば次の `RunAtLoad` で拾われる．先に取り込んでいると
 `in_progress` に残り，`WatchPaths` は inbox だけなので誰も拾わず黙って止まる．
 副次的に，`in_progress` に待ち行列のファイルが混ざらない利点もある．
 
@@ -325,10 +325,10 @@ launchd は同じジョブを二重に起動しないが，`scan_inbox.sh` と�
 
 | 仕組み | 何を防ぐか |
 |---|---|
-| 確保の `mv`（原子的） | 自動の2プロセスが同じ inbox のファイルを取ること |
+| 取り込みの `mv`（原子的） | 自動の2プロセスが同じ inbox のファイルを取ること |
 | 資料ロック（実パスを鍵にする） | 同じファイルに対して別の処理が始まること |
 
-**資料ロックは両経路が取る．** 手動は原本のパスに，自動は確保後の `in_progress` の
+**資料ロックは両経路が取る．** 手動は原本のパスに，自動は取り込み後の `in_progress` の
 パスに立てる．`in_progress` はパスが安定しているため，処理中のファイルに人が
 `ref` をかけられてしまい，放っておくと同じ論文でNotionページが2つできる．
 自動が `.work/<run_id>/` に隠していた間は，この札は不要だった．
@@ -408,11 +408,13 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 
 | ステップ | 表示 | 判定根拠 | 担い手 |
 |---|---|---|---|
-| `claim` | `fetch file` | 自動のみ．`inbox` → `in_progress` へ `mv` | シェル |
-| `page` | `create page` | `notion_url` が非空 | AI |
-| `complete` | `finish page` | `status` == `success` | AI |
+| `fetch` | `fetch file` | 自動のみ．`inbox` → `in_progress` へ `mv` | シェル |
+| `create` | `create page` | `notion_url` が非空 | AI |
+| `finish` | `finish page` | `status` == `success` | AI |
 | `rename` | `rename file` | `rename_to_key` | シェル |
 | `move` | `move file` | 自動のみ．`in_progress` → `PAPER_ROOT` へ `mv` | シェル |
+
+内部のキーは表示名の動詞そのものである．語を二重に持たない．
 
 AIの出力2項目が，そのままAIの担当する2ステップに対応する．
 
@@ -421,9 +423,9 @@ AIの出力2項目が，そのままAIの担当する2ステップに対応す�
 
 | 経路 | `STEP_LIST` |
 |---|---|
-| 手動・PDF | `page complete rename` |
-| 手動・URL | `page complete` |
-| 自動 | `claim page complete rename move` |
+| 手動・PDF | `create finish rename` |
+| 手動・URL | `create finish` |
+| 自動 | `fetch create finish rename move` |
 
 状態は3つある．**作業単位のライフサイクルを過去分詞で言う系統**に揃えてあり，
 見出しの `Started` / `Completed` / `Failed` と同じ系統である．
@@ -444,11 +446,11 @@ AIの出力2項目が，そのままAIの担当する2ステップに対応す�
 ### 開始の通知は枠を取った直後に出す
 
 `notify_start` は**対象を用意する前**に投稿する．順序は
-枠 → 実行ディレクトリ作成 → **開始通知** → 確保（`claim`）である．
+枠 → 実行ディレクトリ作成 → **開始通知** → 取り込み（`fetch`）である．
 
-確保より後に出すと，確保に失敗したことを通知できない．
-`claim` をステップとして数えるなら，その失敗も通知されなければ筋が通らない．
-そのため，確保に失敗した場合も黙って終了せず `🚨 Failed` を出す．
+取り込みより後に出すと，取り込みに失敗したことを通知できない．
+`fetch` をステップとして数えるなら，その失敗も通知されなければ筋が通らない．
+そのため，取り込みに失敗した場合も黙って終了せず `🚨 Failed` を出す．
 
 ```
 🚨 Failed: ~/Research/Papers/in_progress/paper.pdf
@@ -466,7 +468,7 @@ error: "この資料は既に処理中である"
 
 ### 再実行
 
-**`in_progress/` に残っているものが未完了である．** 直下へ出たものが完了したものである．
+**`in_progress/` に残っているものが完了していないものである．** 直下へ出たものが完了したものである．
 `<run_id>_` のような接頭辞は付かないので，元の名前のまま再実行できる．
 
 ```sh
@@ -558,7 +560,7 @@ Rating は Notion のプロパティには入るが，スクリプトへは返�
 | `slack_post.json` / `slack_update.json` | Slack API の応答（通知が届かない場合の調査用） |
 
 成功時は作業ディレクトリを削除し，失敗時は調査用に残す（保存期間の削除対象に含める）．
-`in_progress/` のPDF自体は保存期間では削除しない（未完了のまま残す）．
+`in_progress/` のPDF自体は保存期間では削除しない（完了していないまま残す）．
 
 `transcript.jsonl` は Claude Code 自身が保存するセッションファイルを
 `session_id` で検索して複製したものである．AI がどのコマンドを実行して

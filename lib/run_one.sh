@@ -4,14 +4,14 @@
 # 手動（bin/ref）と自動（lib/process_inbox.sh）が共有する．
 # 経路ごとに違うのは次の2つの関数だけで，呼び出し側が定義して差し替える．
 #
-#   prepare_target   対象を作業ディレクトリへ用意する（手動=コピー／自動=mv で確保）
-#                    成功したら自動は step_completed claim を記録する．
+#   prepare_target   対象を作業ディレクトリへ用意する（手動=コピー／自動=mv で取り込む）
+#                    成功したら自動は step_completed fetch を記録する．
 #                    失敗したら ERROR_MESSAGE を設定して 1 を返す．
 #   place_result     結果に応じてファイルを配置する（手動=原本を改名／自動=改名して移動）
 #                    引数は解析が成功なら 1．ステップを step_completed / step_failed で記録し，
 #                    ファイルが動いたら CURRENT_PATH を更新する．返り値は見ない．
 #
-# 全体の成否は「全ステップが done か」だけで決まる（lib/core.sh の steps_all_completed）．
+# 全体の成否は「全ステップが completed か」だけで決まる（lib/core.sh の steps_all_completed）．
 #
 # 呼び出し側が設定する変数:
 #   RUN_MODE         auto | manual
@@ -41,7 +41,7 @@ run_one() {
 
   if ! prepare_target; then
     if [ -z "${ERROR_MESSAGE:-}" ]; then ERROR_MESSAGE="対象を用意できなかった"; fi
-    log_msg "未完了: $ERROR_MESSAGE"
+    log_msg "失敗: $ERROR_MESSAGE"
     notify_result
     release_slot
     return 1
@@ -60,7 +60,7 @@ run_one() {
     return 0
   fi
 
-  log_msg "未完了: ${ERROR_MESSAGE:-不明}"
+  log_msg "失敗: ${ERROR_MESSAGE:-不明}"
   release_slot
   # 失敗時は調査用に作業ディレクトリを残す（保存期間の削除対象に含める）
   return 1

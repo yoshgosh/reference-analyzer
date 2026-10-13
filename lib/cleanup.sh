@@ -2,7 +2,7 @@
 # 保存期間を過ぎた実行記録・作業ディレクトリを削除する．
 #
 # 削除する   : PAPER_LOG_DIR 配下，PAPER_WORK_DIR 配下の run_id ディレクトリ
-# 削除しない : in_progress/ のPDF（未完了のまま残す．再実行の対象である）
+# 削除しない : in_progress/ のPDF（完了していないまま残す．再実行の対象である）
 #              先頭がドットのディレクトリ（.locks 等．保持中のロックを壊さないため）
 
 cleanup_old_records() {

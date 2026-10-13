@@ -150,7 +150,7 @@ target_lock_path() {  # <種別> <対象>
 
 # システム全体で同時に処理する資料を PAPER_PARALLEL 件に抑える．
 #
-# 枠は「1資源を処理する許可」である．取得してから対象を確保するので，
+# 枠は「1資源を処理する許可」である．取得してから対象を取り込むので，
 # 待っているプロセスはファイルを掴まない．
 # 枠の状態はディスク上にあるため，起動経路（手動・自動）やプロセス数に関わらず
 # 合計が効く．これが唯一の同時実行の制御点である．
@@ -214,14 +214,16 @@ release_slot() {
 
 # ---------------------------------------------------------------- ステップ
 
-# 1資料の処理は，次のステップの連なりである．番号は固定で，
-# 経路に存在しないものは出さない（STEP_LIST で宣言する）．
+# 1資料の処理は，次のステップの連なりである．
+# 経路に存在しないものは出さない（STEP_LIST で宣言する）．通知の番号は並び順である．
 #
-#   ① claim     fetch file     自動のみ．inbox から in_progress へ移した（シェル）
-#   ② page      create page    Notion ページを作成した（AI：notion_url が非空）
-#   ③ complete  finish page    ページを完成させた（AI：status == success）
-#   ④ rename    rename file    Citation Key へ改名した（シェル：rename_to_key）
-#   ⑤ move      move file      自動のみ．PAPER_ROOT へ移した（シェル：move_into）
+#   fetch   fetch file     自動のみ．inbox から in_progress へ移した（シェル）
+#   create  create page    Notion ページを作成した（AI：notion_url が非空）
+#   finish  finish page    ページを完成させた（AI：status == success）
+#   rename  rename file    Citation Key へ改名した（シェル：rename_to_key）
+#   move    move file      自動のみ．PAPER_ROOT へ移した（シェル：move_into）
+#
+# キーは表示名の動詞そのものである（表示名は step_label が組み立てる）．
 #
 # 状態は3つある．作業単位のライフサイクルを過去分詞で言う系統に揃えている
 # （見出しの Started / Completed / Failed と同じ系統）．
@@ -235,9 +237,9 @@ release_slot() {
 # 状態名に error を使わない．理由の項目名が error であり（スキーマの項目名），
 # 同じメッセージの中で error が2つの意味で並んでしまう．
 #
-# STEP_LIST は経路が宣言する（手動=ファイル: page complete rename ／
-# 手動=URL: page complete ／ 自動: claim page complete rename move）．
-STEP_LIST="${STEP_LIST:-claim page complete rename move}"
+# STEP_LIST は経路が宣言する（手動=ファイル: create finish rename ／
+# 手動=URL: create finish ／ 自動: fetch create finish rename move）．
+STEP_LIST="${STEP_LIST:-fetch create finish rename move}"
 
 step_completed() { eval "STEPSTATE_$1=completed"; }
 step_failed()    { eval "STEPSTATE_$1=failed"; }

@@ -7,14 +7,16 @@
 # Incoming Webhook は使わない．応答が "ok" という文字列だけで，
 # 書き換えに必要な ts を返さないためである（実測で確認済み）．
 #
-# 終端は2つしかない．全ステップが完了したら ✅，ひとつでも欠けたら ❌ である．
-# 何が残っているかはステップの行が示すので，状態に名前を付けて区別しない．
+# メッセージは3種で，見出しがそのまま状態である．
 #
-#   ✅ 完了   全ステップ ok                     → 作業なし
-#   ❌ 失敗   ひとつ以上が未完了                → ステップの行を見て対処する
+#   🚀 Started     枠を取得して処理を始めた
+#   ✅ Completed   全ステップが completed
+#   🚨 Failed      completed でないステップがある
 #
-# ❌ のうち，page と complete が ok でファイル側だけが欠けている場合は，
-# AI の再実行は不要で，ファイルを動かすだけで終わる．
+# 語彙は「作業単位のライフサイクルを過去分詞で言う」系統に揃えている．
+# 見出しが開始と2つの終端，ステップ（lib/core.sh）が2つの終端と開始の否定を使う．
+#
+# warning: の行は見出しを変えない．どちらの見出しでも出る．
 #
 # 送信に失敗しても処理全体は失敗扱いにしない（ログに記録するのみ）．
 # トークンをログや通知本文に出力しない．
@@ -174,11 +176,11 @@ step_no() {  # <1 から始まる序数>
 
 step_label() {  # <ステップ名>
   case "$1" in
-    claim)    printf 'fetch file' ;;
-    page)     printf 'create page' ;;
-    complete) printf 'finish page' ;;
-    rename)   printf 'rename file' ;;
-    move)     printf 'move file' ;;
+    fetch)  printf 'fetch file' ;;
+    create) printf 'create page' ;;
+    finish) printf 'finish page' ;;
+    rename) printf 'rename file' ;;
+    move)   printf 'move file' ;;
     *)        printf '%s' "$1" ;;
   esac
 }

@@ -93,12 +93,12 @@ json.dump({"status": "failed", "citation_key": "", "title": "",
   fi
 
   # AI が担うステップを記録する．判定はこの2つの出力項目だけで足りる．
-  # ページを作れなかった場合は，完成（complete）には着手できていないので pending にする．
+  # ページを作れなかった場合，完成には着手できていないので skipped のままにする．
   if [ -n "$NOTION_URL" ]; then
-    step_completed page
-    if [ "$RESULT_STATUS" = "success" ]; then step_completed complete; else step_failed complete; fi
+    step_completed create
+    if [ "$RESULT_STATUS" = "success" ]; then step_completed finish; else step_failed finish; fi
   else
-    step_failed page
+    step_failed create
   fi
 
   # 成功の定義：終了コード0，status=success，正規化後の citation_key が妥当

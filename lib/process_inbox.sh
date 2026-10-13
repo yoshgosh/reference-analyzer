@@ -8,7 +8,7 @@
 #
 # 自動は「手動と同じ処理」の前後に移動を1回ずつ足したものである．
 #
-#   ① inbox → in_progress へ確保する（mv の原子性が自動どうしの排他になる．ステップ claim）
+#   ① inbox → in_progress へ取り込む（mv の原子性が自動どうしの排他になる．ステップ fetch）
 #   ② in_progress のファイルに対して手動と同じ処理を行う
 #      （コピーだけを AI に見せ，最後にその場で改名する）
 #   ③ in_progress → PAPER_ROOT へ出す
@@ -40,24 +40,24 @@ RUN_MODE=auto
 TARGET_KIND=file
 TARGET_LABEL="$ORIG_NAME"
 AUX_DESC=""
-STEP_LIST="claim page complete rename move"
-# 開始の通知より前に確定している必要がある（確保はそのあとで走る）
+STEP_LIST="fetch create finish rename move"
+# 開始の通知より前に確定している必要がある（取り込みはそのあとで走る）
 CURRENT_PATH="$INBOX_PATH"
 
-# ① 確保する．move_into は配置ロックの中で空き名を決めてから mv するので，
+# ① 取り込む．move_into は配置ロックの中で空き名を決めてから mv するので，
 # 同名が既に in_progress にあれば _2 に逃がし，同じファイルを2プロセスが
 # 取り合った場合は負けた側の mv が失敗する．
 prepare_target() {
   local dest
   if ! dest="$(move_into "$INBOX_PATH" "$PAPER_IN_PROGRESS_DIR")"; then
-    step_failed claim
+    step_failed fetch
     ERROR_MESSAGE="inbox から取り込めなかった（他のプロセスが先に取ったか，ファイルが無くなった）"
     return 1
   fi
   TARGET_PATH="$dest"
   TARGET_LABEL="$(basename "$dest")"
   CURRENT_PATH="$dest"
-  step_completed claim
+  step_completed fetch
 
   # in_progress はパスが安定しているため，処理中のファイルに人が ref をかけうる．
   # 手動と同じ札を立てて，同じ資料への二重処理を防ぐ．
@@ -88,7 +88,7 @@ prepare_target() {
 # 改名できなかった場合も in_progress に残すだけで，どこへも動かさない．
 place_result() {  # <解析が成功なら1>
   local dest
-  place_in_place "$1" || return 0
+  rename_step "$1" || return 0
 
   if dest="$(move_into "$CURRENT_PATH" "$PAPER_ROOT")"; then
     step_completed move

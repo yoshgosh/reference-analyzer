@@ -61,7 +61,7 @@ case "$TARGET" in
     TARGET_KIND=url
     TARGET_LABEL="$TARGET"
     # URL は改名する対象が無い
-    STEP_LIST="page complete"
+    STEP_LIST="create finish"
     CURRENT_PATH=""
     ;;
   *)
@@ -76,7 +76,7 @@ case "$TARGET" in
     TARGET_KIND=file
     TARGET_PATH="$(cd "$(dirname "$TARGET")" && pwd)/$(basename "$TARGET")"
     TARGET_LABEL="$(basename "$TARGET_PATH")"
-    # inbox は自動処理の持ち場である．ここを手動で指すと，自動が確保のために
+    # inbox は自動処理の持ち場である．ここを手動で指すと，自動が取り込みのために
     # mv した瞬間に対象が消える（ロックの取得順も経路間で逆になる）．
     case "$TARGET_PATH" in
       "$PAPER_INBOX_DIR"/*)
@@ -85,7 +85,7 @@ case "$TARGET" in
         exit 2 ;;
     esac
     # 手動は原本をその場で改名するだけで，移動はしない
-    STEP_LIST="page complete rename"
+    STEP_LIST="create finish rename"
     CURRENT_PATH="$TARGET_PATH"
     ;;
 esac
@@ -207,16 +207,16 @@ prepare_target() {
   return 0
 }
 
-# 原本をその場で改名するだけで，移動はしない（place_in_place が共有の本体）．
+# 原本をその場で改名するだけで，移動はしない（rename_step が共有の本体）．
 # 失敗した場合は原本に触らない．
 place_result() {  # <解析が成功なら1>
-  place_in_place "$1" || return 0
+  rename_step "$1" || return 0
   return 0
 }
 
 # ---------------------------------------------------------------- 実行
 
-# 同じ資料への多重実行を弾く（原本を移動しないため mv による確保ができない）
+# 同じ資料への多重実行を弾く（原本を移動しないため mv による取り込みができない）
 LOCK_PATH="$(target_lock_path "$TARGET_KIND" "${TARGET_PATH:-$TARGET}")"
 if ! acquire_lock "$LOCK_PATH" 5; then
   echo "この資料は既に処理中である: $TARGET_LABEL" >&2
@@ -226,15 +226,26 @@ fi
 
 cleanup_old_records || true
 
+# 標準出力のラベルは通知と同じ語彙を使う（語を二重に持たない）
 if run_one; then
-  echo "成功: ${TITLE}"
-  echo "  Citation Key : ${CITATION_KEY}"
-  echo "  Notion       : ${NOTION_URL}"
-  [ "$TARGET_KIND" = file ] && echo "  ファイル     : ${CURRENT_PATH}"
+  echo "Completed: ${TITLE}"
+  echo "citation_key: ${CITATION_KEY}"
+  echo "notion: ${NOTION_URL}"
+  if [ "$TARGET_KIND" = file ]; then
+    echo "file: ${CURRENT_PATH}"
+  else
+    echo "url: ${TARGET}"
+  fi
+  [ -n "${GUARD_WARNING:-}" ] && echo "warning: ${GUARD_WARNING}"
   exit 0
 fi
 
-echo "失敗: ${ERROR_MESSAGE:-不明}" >&2
-[ "$TARGET_KIND" = file ] && echo "  元ファイルは変更していない: ${TARGET_PATH}" >&2
-echo "  ログ: ${RECORD_DIR}" >&2
+{
+  echo "Failed: ${TITLE:-$TARGET_LABEL}"
+  printf '%s\n' "$(steps_log | tr ' ' '\n' | sed 's/^/  /')"
+  echo "error: ${ERROR_MESSAGE:-不明}"
+  [ -n "${NOTION_URL:-}" ] && echo "notion: ${NOTION_URL}  # 作成済み．再実行の前に削除する"
+  [ "$TARGET_KIND" = file ] && echo "file: ${CURRENT_PATH}"
+  echo "log: ${RECORD_DIR}"
+} >&2
 exit 1
