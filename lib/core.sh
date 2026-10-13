@@ -214,39 +214,47 @@ release_slot() {
 
 # ---------------------------------------------------------------- ステップ
 
-# 1資料の処理は，次のステップの連なりである．
+# 1資料の処理は，次のステップの連なりである．番号は固定で，
+# 経路に存在しないものは出さない（STEP_LIST で宣言する）．
 #
-#   claim       自動のみ．inbox から in_progress へ移した 判定: prepare_target（シェル）
-#   page        Notion ページを作成した       判定: notion_url が非空（AI）
-#   complete    ページを完成させた             判定: status == success（AI）
-#   rename      Citation Key へ改名した        判定: rename_to_key（シェル）
-#   move        自動のみ．PAPER_ROOT へ移した  判定: move_into（シェル）
+#   ① claim     fetch file     自動のみ．inbox から in_progress へ移した（シェル）
+#   ② page      create page    Notion ページを作成した（AI：notion_url が非空）
+#   ③ complete  finish page    ページを完成させた（AI：status == success）
+#   ④ rename    rename file    Citation Key へ改名した（シェル：rename_to_key）
+#   ⑤ move      move file      自動のみ．PAPER_ROOT へ移した（シェル：move_into）
 #
-# 各ステップは ok（完了）か未完了のどちらかで，全体の成否は
-# 「全ステップが ok か」だけで決まる．途中で止まったのか着手して失敗したのかは
-# ERROR_MESSAGE が示すので，ステップ側では区別しない．
+# 状態は3つある．作業単位のライフサイクルを過去分詞で言う系統に揃えている
+# （見出しの Started / Completed / Failed と同じ系統）．
+#
+#   completed  達成した
+#   failed     着手したが達成しなかった
+#   skipped    始まらなかった（既定値．前段が失敗したので実行されなかった）
+#
+# 全体の成否は「全ステップが completed か」だけで決まる．
+#
+# 状態名に error を使わない．理由の項目名が error であり（スキーマの項目名），
+# 同じメッセージの中で error が2つの意味で並んでしまう．
 #
 # STEP_LIST は経路が宣言する（手動=ファイル: page complete rename ／
 # 手動=URL: page complete ／ 自動: claim page complete rename move）．
 STEP_LIST="${STEP_LIST:-claim page complete rename move}"
 
-step_ok() {  # <ステップ名>
-  eval "STEPSTATE_$1=ok"
-}
+step_completed() { eval "STEPSTATE_$1=completed"; }
+step_failed()    { eval "STEPSTATE_$1=failed"; }
 
 step_state() {  # <ステップ名>
-  eval "printf '%s' \"\${STEPSTATE_$1:-ng}\""
+  eval "printf '%s' \"\${STEPSTATE_$1:-skipped}\""
 }
 
-steps_all_ok() {
+steps_all_completed() {
   local s
   for s in $STEP_LIST; do
-    [ "$(step_state "$s")" = ok ] || return 1
+    [ "$(step_state "$s")" = completed ] || return 1
   done
   return 0
 }
 
-# ログ用．通知の表示は lib/notify_slack.sh の step_line が組み立てる．
+# ログ用．通知の表示は lib/notify_slack.sh が組み立てる．
 steps_log() {
   local s out=""
   for s in $STEP_LIST; do

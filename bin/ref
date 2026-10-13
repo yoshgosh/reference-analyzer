@@ -62,6 +62,7 @@ case "$TARGET" in
     TARGET_LABEL="$TARGET"
     # URL は改名する対象が無い
     STEP_LIST="page complete"
+    CURRENT_PATH=""
     ;;
   *)
     if [ ! -f "$TARGET" ]; then
@@ -85,6 +86,7 @@ case "$TARGET" in
     esac
     # 手動は原本をその場で改名するだけで，移動はしない
     STEP_LIST="page complete rename"
+    CURRENT_PATH="$TARGET_PATH"
     ;;
 esac
 
@@ -154,14 +156,23 @@ else
     "この1本を対象として処理せよ．")"
 fi
 
-AUX_DESC=""
+AUX_DESC=""      # プロンプトに渡す一覧（全件）
+AUX_SUMMARY=""   # 通知の with: に出す要約（50文字で打ち切る）
 if [ "$AUX_COUNT" -gt 0 ] || [ "${#AUX_URLS[@]}" -gt 0 ]; then
   for f in ${AUX_FILES[@]+"${AUX_FILES[@]}"}; do
     AUX_DESC="${AUX_DESC}- ./aux/$(basename "$f")"$'\n'
+    AUX_SUMMARY="${AUX_SUMMARY}${AUX_SUMMARY:+, }$(basename "$f")"
   done
   for u in ${AUX_URLS[@]+"${AUX_URLS[@]}"}; do
     AUX_DESC="${AUX_DESC}- URL: ${u}"$'\n'
+    AUX_SUMMARY="${AUX_SUMMARY}${AUX_SUMMARY:+, }${u}"
   done
+  # 文字数で数える（bash 3.2 の ${#var} はバイト数になりうる）
+  AUX_SUMMARY="$(py -c '
+import sys
+t = sys.argv[1]
+sys.stdout.write(t if len(t) <= 50 else t[:50] + "...")
+' "$AUX_SUMMARY")"
 fi
 
 # ---------------------------------------------------------------- 経路ごとの2つの関数
@@ -200,10 +211,6 @@ prepare_target() {
 # 失敗した場合は原本に触らない．
 place_result() {  # <解析が成功なら1>
   place_in_place "$1" || return 0
-  if [ -n "$RENAMED_PATH" ]; then
-    PLACEMENT="${TARGET_LABEL} → $(basename "$RENAMED_PATH")（$(dirname "$RENAMED_PATH") に据え置き）"
-    FINAL_PATH="$RENAMED_PATH"
-  fi
   return 0
 }
 
@@ -219,12 +226,11 @@ fi
 
 cleanup_old_records || true
 
-FINAL_PATH=""
 if run_one; then
   echo "成功: ${TITLE}"
   echo "  Citation Key : ${CITATION_KEY}"
   echo "  Notion       : ${NOTION_URL}"
-  [ -n "$FINAL_PATH" ] && echo "  ファイル     : ${FINAL_PATH}"
+  [ "$TARGET_KIND" = file ] && echo "  ファイル     : ${CURRENT_PATH}"
   exit 0
 fi
 

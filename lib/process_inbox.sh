@@ -41,6 +41,8 @@ TARGET_KIND=file
 TARGET_LABEL="$ORIG_NAME"
 AUX_DESC=""
 STEP_LIST="claim page complete rename move"
+# 開始の通知より前に確定している必要がある（確保はそのあとで走る）
+CURRENT_PATH="$INBOX_PATH"
 
 # ① 確保する．move_into は配置ロックの中で空き名を決めてから mv するので，
 # 同名が既に in_progress にあれば _2 に逃がし，同じファイルを2プロセスが
@@ -48,12 +50,14 @@ STEP_LIST="claim page complete rename move"
 prepare_target() {
   local dest
   if ! dest="$(move_into "$INBOX_PATH" "$PAPER_IN_PROGRESS_DIR")"; then
+    step_failed claim
     ERROR_MESSAGE="inbox から取り込めなかった（他のプロセスが先に取ったか，ファイルが無くなった）"
     return 1
   fi
   TARGET_PATH="$dest"
   TARGET_LABEL="$(basename "$dest")"
-  step_ok claim
+  CURRENT_PATH="$dest"
+  step_completed claim
 
   # in_progress はパスが安定しているため，処理中のファイルに人が ref をかけうる．
   # 手動と同じ札を立てて，同じ資料への二重処理を防ぐ．
@@ -61,7 +65,6 @@ prepare_target() {
   if ! acquire_lock "$LOCK_PATH" 1; then
     LOCK_PATH=""
     ERROR_MESSAGE="この資料は既に処理中である"
-    PLACEMENT="${TARGET_PATH}（in_progress に置いたまま終了した）"
     return 1
   fi
 
@@ -87,12 +90,12 @@ place_result() {  # <解析が成功なら1>
   local dest
   place_in_place "$1" || return 0
 
-  if dest="$(move_into "$RENAMED_PATH" "$PAPER_ROOT")"; then
-    step_ok move
-    PLACEMENT="${ORIG_NAME} → $(basename "$dest")"
+  if dest="$(move_into "$CURRENT_PATH" "$PAPER_ROOT")"; then
+    step_completed move
+    CURRENT_PATH="$dest"
     return 0
   fi
-  PLACEMENT="${RENAMED_PATH} → ${PAPER_ROOT}/ へ移してください"
+  step_failed move
   ERROR_MESSAGE="${PAPER_ROOT} への移動に失敗した"
   return 0
 }

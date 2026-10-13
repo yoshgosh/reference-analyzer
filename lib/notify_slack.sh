@@ -43,17 +43,19 @@ slack_enabled() {
 }
 
 # 処理の開始を投稿する（枠を取得した後に呼ぶ）
-notify_start() {  # <対象の表示名>
-  local target="$1" resp text
+notify_start() {
+  local resp text line
 
   if ! slack_enabled; then
     log_msg "Slack: SLACK_BOT_TOKEN または SLACK_CHANNEL が未設定のため通知しない"
     return 0
   fi
 
-  text="$(printf '%s\n' \
-    ":hourglass_flowing_sand: *処理中*（$(mode_label)） — ${target}" \
-    "run_id \`${RUN_ID}\`")"
+  text=":rocket: Started: $(subject)"
+  line="$(with_line)"; [ -n "$line" ] && text="${text}
+${line}"
+  text="${text}
+$(run_meta)"
 
   resp="$RECORD_DIR/slack_post.json"
   if ! py -c '
@@ -111,91 +113,116 @@ sys.stdout.write(json.dumps({"channel": sys.argv[1], "ts": sys.argv[2], "text": 
   return 0
 }
 
-mode_label() {
-  case "${RUN_MODE:-}" in
-    auto)   printf '自動' ;;
-    manual) printf '手動' ;;
-    *)      printf '不明' ;;
+# 実行の属性（全メッセージ共通の最終行）
+run_meta() {  # [経過時間を出すなら 1]
+  printf 'run_id: `%s`, trigger: %s, model: %s / %s / %s' \
+    "$RUN_ID" "${RUN_MODE:-unknown}" "$PAPER_ENGINE" "$PAPER_MODEL" "$PAPER_EFFORT"
+  [ "${1:-}" = "1" ] && printf ', duration: %ssec' "$(elapsed)"
+  return 0
+}
+
+# ホーム配下のパスを ~ で短くする．文中に現れるものも含めて置き換える．
+tilde() {  # <文字列>
+  printf '%s' "${1//$HOME/~}"
+}
+
+# 見出しの資料名．
+# タイトルが取れるまでは対象そのもの（いまのパス または URL）を出す．
+# Notion ページがあればリンクにする．
+subject() {
+  local name
+  if [ -n "${TITLE:-}" ]; then
+    name="$TITLE"
+  elif [ "$TARGET_KIND" = url ]; then
+    name="$TARGET"
+  else
+    name="$(tilde "${CURRENT_PATH:-$TARGET_LABEL}")"
+  fi
+  if [ -n "${NOTION_URL:-}" ]; then
+    printf '<%s|%s>' "$NOTION_URL" "$name"
+  else
+    printf '%s' "$name"
+  fi
+}
+
+# 対象の行．いまファイルがある場所（または対象のURL）を示す．
+# タイトルが無いときは見出しが同じ内容になるので出さない．
+target_line() {
+  [ -z "${TITLE:-}" ] && return 0
+  if [ "$TARGET_KIND" = url ]; then
+    printf 'url: `%s`' "$TARGET"
+  elif [ -n "${CURRENT_PATH:-}" ]; then
+    printf 'file: `%s`' "$(tilde "$CURRENT_PATH")"
+  fi
+  return 0
+}
+
+# 補助資料の行（手動のみ）．AUX_SUMMARY は bin/ref が組み立てる．
+with_line() {
+  [ -n "${AUX_SUMMARY:-}" ] && printf 'with: %s' "$AUX_SUMMARY"
+  return 0
+}
+
+# ステップの行（🚨 Failed のみ）．
+# 番号は経路ごとの並び順である（手動は ① から始まり，fetch file と move file を持たない）．
+step_no() {  # <1 から始まる序数>
+  case "$1" in
+    1) printf '①' ;; 2) printf '②' ;; 3) printf '③' ;;
+    4) printf '④' ;; 5) printf '⑤' ;; *) printf '%s.' "$1" ;;
   esac
 }
 
-run_footer() {
-  printf '• %s / %s / effort=%s ・ %s秒 ・ run_id `%s`' \
-    "$PAPER_ENGINE" "$PAPER_MODEL" "$PAPER_EFFORT" "$(elapsed)" "$RUN_ID"
-}
-
-# ステップの行．経路に存在するステップだけを STEP_LIST の順に出す．
 step_label() {  # <ステップ名>
   case "$1" in
-    claim)    printf '取り込み' ;;
-    page)     printf 'ページ作成' ;;
-    complete) printf 'ページ完成' ;;
-    rename)   printf '改名' ;;
-    move)     printf '移動' ;;
+    claim)    printf 'fetch file' ;;
+    page)     printf 'create page' ;;
+    complete) printf 'finish page' ;;
+    rename)   printf 'rename file' ;;
+    move)     printf 'move file' ;;
     *)        printf '%s' "$1" ;;
   esac
 }
 
-step_line() {
-  local s out="" mark
+step_lines() {
+  local s out="" n=0
   for s in $STEP_LIST; do
-    if [ "$(step_state "$s")" = ok ]; then
-      mark=':white_check_mark:'
-    else
-      mark=':x:'
-    fi
-    out="${out}${out:+  }$(step_label "$s") ${mark}"
+    n=$((n + 1))
+    out="${out}${out:+
+}$(step_no "$n") $(step_label "$s"): $(step_state "$s")"
   done
   printf '%s' "$out"
 }
 
-# Notion の行．再実行の前に既存ページを消す必要があるかどうかを示す．
-notion_line() {
-  if [ -z "${NOTION_URL:-}" ]; then
-    printf 'ページ未作成 — そのまま再実行できます'
-  elif [ "$(step_state complete)" = ok ]; then
-    printf '%s' "$NOTION_URL"
-  else
-    printf '%s ← 既存ページ．削除してから再実行' "$NOTION_URL"
-  fi
-}
-
 # 結果の通知（開始通知を書き換える）
+#
+#   ✅ Completed   全ステップ completed
+#   🚨 Failed      completed でないステップがある
+#
+# Completed はステップを出さない（全部 completed と分かっているため）．
+# 混入ガードの警告は見出しにせず warning: の行で示す（どちらの見出しでも出る）．
 notify_result() {
-  local body
+  local body line
 
-  if steps_all_ok; then
-    body=":white_check_mark: *完了*（$(mode_label)） — ${TITLE:-$TARGET_LABEL}"
+  if steps_all_completed; then
+    body=":white_check_mark: Completed: $(subject)"
   else
-    body=":x: *失敗*（$(mode_label)） — ${TITLE:-$TARGET_LABEL}"
+    body=":rotating_light: Failed: $(subject)
+$(step_lines)"
+    [ -n "${ERROR_MESSAGE:-}" ] && body="${body}
+error: \"$(tilde "$ERROR_MESSAGE")\""
   fi
-  body="${body}
-$(step_line)"
 
-  if ! steps_all_ok && [ -n "${ERROR_MESSAGE:-}" ]; then
-    body="${body}
-• 理由: ${ERROR_MESSAGE}"
-  fi
-  if [ -n "${CITATION_KEY:-}" ]; then
-    body="${body}
-• Citation Key: \`${CITATION_KEY}\`"
-  fi
+  [ -n "${GUARD_WARNING:-}" ] && body="${body}
+warning: \"$(tilde "$GUARD_WARNING")\""
+  [ -n "${CITATION_KEY:-}" ] && body="${body}
+citation_key: \`${CITATION_KEY}\`"
+  line="$(target_line)"; [ -n "$line" ] && body="${body}
+${line}"
+  line="$(with_line)"; [ -n "$line" ] && body="${body}
+${line}"
   body="${body}
-• Notion: $(notion_line)"
-  if [ -n "${PLACEMENT:-}" ]; then
-    body="${body}
-• ファイル: ${PLACEMENT}"
-  fi
-  body="${body}
-$(run_footer)"
-  if ! steps_all_ok; then
-    body="${body}
-• ログ: ${RECORD_DIR}"
-  fi
-  if [ -n "${GUARD_WARNING:-}" ]; then
-    body="${body}
-• :warning: ${GUARD_WARNING}"
-  fi
+$(run_meta 1)"
 
   slack_finish "$body"
+  return 0
 }

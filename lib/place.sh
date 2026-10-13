@@ -79,28 +79,23 @@ move_into() {  # <パス> <移動先ディレクトリ> [基本名を差し替�
 # 対象（TARGET_PATH）をその場で <CitationKey>.<拡張子> に改名する．移動はしない．
 # 両経路が共有する．自動では確保後の in_progress のファイルが対象になる．
 #
+# 通知は「いまどこにあるか」だけを出すので，作文はせず CURRENT_PATH を更新する．
+#
 # 返り値 0 … 改名した（URL のときも 0．改名する対象が無い）
 #        1 … 改名していない
-# 改名後のパスは RENAMED_PATH に入れる．
 place_in_place() {  # <解析が成功なら1>
   local ok="$1" dest
-  RENAMED_PATH=""
 
-  if [ "$TARGET_KIND" = url ]; then
-    PLACEMENT=""
-    return 0
-  fi
-  if [ "$ok" != "1" ]; then
-    PLACEMENT="${TARGET_PATH}（改名していない）"
-    return 1
-  fi
+  [ "$TARGET_KIND" = url ] && return 0
+  # 解析が失敗したときは原本に触らない．ステップは pending のままにする．
+  [ "$ok" != "1" ] && return 1
+
   if dest="$(rename_to_key "$TARGET_PATH" "$CITATION_KEY")"; then
-    step_ok rename
-    RENAMED_PATH="$dest"
-    PLACEMENT="${TARGET_LABEL} → $(basename "$dest")"
+    step_completed rename
+    CURRENT_PATH="$dest"
     return 0
   fi
-  PLACEMENT="${TARGET_PATH}（改名できなかった）"
+  step_failed rename
   ERROR_MESSAGE="改名に失敗した（元: ${TARGET_PATH}）"
   return 1
 }

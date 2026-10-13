@@ -354,22 +354,70 @@ SLACK_CHANNEL=C0C8ME3G3DJ     # チャンネルID を推奨
 名前だと非公開チャンネルで使えず，名前の解決に `channels:read` スコープが
 追加で必要になり，チャンネル名を変えると壊れる．
 
-### ステップごとの成否を出す
+### メッセージは3種
 
-1資料の処理はステップの連なりである．どこまで進んだかを通知にそのまま並べる．
+1メッセージの中身を書き換えるので，見出しがそのまま状態になる．
 
-| | ステップ | 通知の表示 | 判定根拠 | 担い手 |
-|---|---|---|---|---|
-| ① | 確保 | 取り込み | 自動のみ．`inbox` → `in_progress` へ `mv` | シェル |
-| ② | ページ作成 | ページ作成 | `notion_url` が非空 | AI |
-| ③ | ページ完成 | ページ完成 | `status` == `success` | AI |
-| ④ | 改名 | 改名 | `rename_to_key` | シェル |
-| ⑤ | 移動 | 移動 | 自動のみ．`in_progress` → `PAPER_ROOT` へ `mv` | シェル |
+| 見出し | 条件 |
+|---|---|
+| `🚀 Started` | 枠を取得して処理を始めた |
+| `✅ Completed` | 全ステップが `completed` |
+| `🚨 Failed` | `completed` でないステップがある |
+
+```
+🚀 Started: ~/Research/Papers/inbox/Ma2023_Beyond ChatBots - ExploreLLM.pdf
+run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium
+```
+
+```
+✅ Completed: Beyond ChatBots: ExploreLLM for Structured Thoughts…
+citation_key: `Ma2023BeyondChatbots`
+file: `~/Research/Papers/Ma2023BeyondChatbots.pdf`
+run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 84sec
+```
+
+```
+🚨 Failed: Tidier Drawings of Trees
+① fetch file: completed
+② create page: completed
+③ finish page: failed
+④ rename file: skipped
+⑤ move file: skipped
+error: "図3が存在するが，アップロードしたファイルを本文先頭に挿入できなかった"
+citation_key: `Reingold1981TidierDrawings`
+file: `~/Research/Papers/in_progress/tidier-drawings.pdf`
+run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 63sec
+```
+
+見出しの資料名はタイトルで，Notion ページができていればそのリンクになる．
+**タイトルが取れるまでは対象そのもの**（いまのファイルの場所 または URL）を出す．
+そのため `file:` 行は，見出しと重複する場合（タイトルが空のとき）は出さない．
+
+`warning:` の行は見出しを変えない．どちらの見出しでも出る．
+いま警告は1種類で，作業ディレクトリの祖先に `CLAUDE.md` がある場合である．
+
+```
+✅ Completed: Beyond ChatBots: ExploreLLM for Structured Thoughts…
+warning: "祖先に CLAUDE.md がある（混入のおそれ）: ~/CLAUDE.md"
+citation_key: `Ma2023BeyondChatbots`
+file: `~/Research/Papers/Ma2023BeyondChatbots.pdf`
+run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 84sec
+```
+
+### ステップ
+
+| ステップ | 表示 | 判定根拠 | 担い手 |
+|---|---|---|---|
+| `claim` | `fetch file` | 自動のみ．`inbox` → `in_progress` へ `mv` | シェル |
+| `page` | `create page` | `notion_url` が非空 | AI |
+| `complete` | `finish page` | `status` == `success` | AI |
+| `rename` | `rename file` | `rename_to_key` | シェル |
+| `move` | `move file` | 自動のみ．`in_progress` → `PAPER_ROOT` へ `mv` | シェル |
 
 AIの出力2項目が，そのままAIの担当する2ステップに対応する．
 
-経路に存在するステップだけを出す．宣言は経路側にあり（`STEP_LIST`），
-手動はファイルを移動しないので ⑤ を持たず，URL は改名する対象が無いので ④ も持たない．
+経路に存在するステップだけを出し，**番号は並び順**である．
+手動は `fetch file` と `move file` を持たないので `①②③` になる．
 
 | 経路 | `STEP_LIST` |
 |---|---|
@@ -377,59 +425,44 @@ AIの出力2項目が，そのままAIの担当する2ステップに対応す�
 | 手動・URL | `page complete` |
 | 自動 | `claim page complete rename move` |
 
+状態は3つある．**作業単位のライフサイクルを過去分詞で言う系統**に揃えてあり，
+見出しの `Started` / `Completed` / `Failed` と同じ系統である．
+
+| 状態 | 意味 |
+|---|---|
+| `completed` | 達成した |
+| `failed` | 着手したが達成しなかった |
+| `skipped` | 始まらなかった（既定値．前段が失敗したので実行されなかった） |
+
+**状態名に `error` を使わない．** 理由の項目名が `error:`（スキーマの項目名）であり，
+同じメッセージの中で `error` が2つの意味で並んでしまう．
+`skipped` は，前段が失敗したときに後続をこう記録する CI の慣例に合わせている．
+
+`✅ Completed` はステップを出さない．全部 `completed` と分かっているため，
+情報量がない．
+
 ### 開始の通知は枠を取った直後に出す
 
 `notify_start` は**対象を用意する前**に投稿する．順序は
-枠 → 実行ディレクトリ作成 → **開始通知** → 確保（①）である．
+枠 → 実行ディレクトリ作成 → **開始通知** → 確保（`claim`）である．
 
-確保より後に出すと，確保に失敗したことを通知できない．①
-をステップとして数えるなら，その失敗も通知されなければ筋が通らない．
-
-そのため，確保に失敗した場合も黙って終了せず ❌ を出す．
-
-```
-❌ 失敗（自動） — paper.pdf
-取り込み ✅  ページ作成 ❌  ページ完成 ❌  改名 ❌  移動 ❌
-• 理由: この資料は既に処理中である
-• ファイル: ~/Research/Papers/in_progress/paper.pdf（in_progress に置いたまま終了した）
-```
-
-`取り込み` は `mv` が成功したかどうかだけを表す．上の例は移動はできたが
-札が取れなかった場合で，ファイルの現在地が `• ファイル:` に出る．
-
-### 終端は2つだけ
-
-**全ステップが完了したら ✅，ひとつでも欠けたら ❌** である．
-何が残っているかはステップの行が示すので，状態に名前を付けて区別しない．
+確保より後に出すと，確保に失敗したことを通知できない．
+`claim` をステップとして数えるなら，その失敗も通知されなければ筋が通らない．
+そのため，確保に失敗した場合も黙って終了せず `🚨 Failed` を出す．
 
 ```
-❌ 失敗（自動） — tidier-drawings.pdf
-ページ作成 ✅  ページ完成 ❌  改名 ❌  移動 ❌
-• 理由: 図3が存在するがアップロードに失敗した
-• Notion: https://app.notion.com/p/... ← 既存ページ．削除してから再実行
-• ファイル: ~/Research/Papers/in_progress/tidier-drawings.pdf（改名していない）
+🚨 Failed: ~/Research/Papers/in_progress/paper.pdf
+① fetch file: completed
+② create page: skipped
+③ finish page: skipped
+④ rename file: skipped
+⑤ move file: skipped
+error: "この資料は既に処理中である"
 ```
 
-❌ は「未完了」の意味である．着手して失敗したのか，前段で止まって未実施なのかは
-`• 理由:` が示すので，ステップ側では区別しない．
-
-**②③ が完了していてファイル側だけが欠けている場合は，AIの再実行は不要**で，
-ファイルを動かすだけで終わる．これはステップの行から読み取れる．
-
-```
-❌ 失敗（自動） — Tidier Drawings of Trees
-ページ作成 ✅  ページ完成 ✅  改名 ✅  移動 ❌
-• Citation Key: `Reingold1981TidierDrawings`
-• ファイル: ~/Research/Papers/in_progress/Reingold1981TidierDrawings.pdf → ~/Research/Papers/ へ移してください
-```
-
-`• Notion:` の行が，再実行の前に既存ページを消す必要があるかどうかを示す．
-
-| ② | 表示 |
-|---|---|
-| ❌ | `ページ未作成 — そのまま再実行できます` |
-| ✅ ＋ ③ ❌ | `<URL> ← 既存ページ．削除してから再実行` |
-| ✅ ＋ ③ ✅ | `<URL>` |
+`fetch file` は `mv` が成功したかどうかだけを表す．上の例は移動はできたが
+札が取れなかった場合で，**`failed` のステップが1つも無い `🚨 Failed`** になる．
+見出しと `error:` が理由を持つので成立する．
 
 ### 再実行
 
@@ -437,12 +470,15 @@ AIの出力2項目が，そのままAIの担当する2ステップに対応す�
 `<run_id>_` のような接頭辞は付かないので，元の名前のまま再実行できる．
 
 ```sh
-# ② が ❌ のとき（ページ未作成）
+# create page が failed のとき（ページ未作成）
 mv ~/Research/Papers/in_progress/paper.pdf ~/Research/Papers/inbox/
 
-# ② が ✅ のとき（ページ作成済み）— 先に Notion のページを削除する
+# create page が completed のとき（ページ作成済み）— 先に Notion のページを削除する
 #   削除せずに再実行すると，同じ論文で2件目のページができる
 ```
+
+ステップの行が，再実行の前にやることを決める．`create page: completed` で
+`finish page: failed` なら，ページは存在するので消してから再実行する．
 
 手動で失敗した場合は原本に触っていないので，同じコマンドを打ち直すだけである．
 
@@ -488,12 +524,15 @@ AI 側に手順を足していないので，AI が指示に従うかどうか�
 ## AI の最終出力
 
 ```
-status        "success" | "failed"
+status        "success" | "failed"   → ステップ finish page の判定
 citation_key  スクリプトが改名に使う
 title         通知の見出し
-notion_url    ページを作成したら failed でも必ず入れる
-error         失敗した段階と理由．成功時は空
+notion_url    ページを作成したら failed でも必ず入れる → ステップ create page の判定
+error         失敗した段階と理由．成功時は空 → 通知の error: 行
 ```
+
+通知の `error:` という項目名はここから来ている．
+そのため**ステップの状態名には `error` を使わない**（同じ語が2つの意味で並ぶ）．
 
 Rating は Notion のプロパティには入るが，スクリプトへは返さない．
 スクリプト側で必要とする場面がないためである．
@@ -578,7 +617,7 @@ Webhook URL はログや通知本文に出力しない．
 | `registration.md` | **何を作るか**．書誌項目の定義，要約の構成，Notion のスキーマと登録設定，タグの追加手順 |
 | `headless_addendum.md` | **無人実行での追加・変更**．対象の限定，補助資料，Web検索の扱い，コマンドの制約，画像の取得手順，最終出力 |
 
-一方から他方を参照する場合は節番号で指す（例：「§6 に定める」）。
+一方から他方を参照する場合は節番号で指す（例：「§6 に定める」）．
 
 ## 既知の制約
 
