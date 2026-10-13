@@ -383,7 +383,7 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 ③ finish page: failed
 ④ rename file: skipped
 ⑤ move file: skipped
-error: "図3が存在するが，アップロードしたファイルを本文先頭に挿入できなかった"
+error: 図3が存在するが，アップロードしたファイルを本文先頭に挿入できなかった
 citation_key: `Reingold1981TidierDrawings`
 file: `~/Research/Papers/in_progress/tidier-drawings.pdf`
 run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 63sec
@@ -398,7 +398,7 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 
 ```
 ✅ Completed: Beyond ChatBots: ExploreLLM for Structured Thoughts…
-warning: "祖先に CLAUDE.md がある（混入のおそれ）: ~/CLAUDE.md"
+warning: 祖先に CLAUDE.md がある（混入のおそれ）: ~/CLAUDE.md
 citation_key: `Ma2023BeyondChatbots`
 file: `~/Research/Papers/Ma2023BeyondChatbots.pdf`
 run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 84sec
@@ -459,7 +459,7 @@ AIの出力2項目が，そのままAIの担当する2ステップに対応す�
 ③ finish page: skipped
 ④ rename file: skipped
 ⑤ move file: skipped
-error: "この資料は既に処理中である"
+error: この資料は既に処理中である
 ```
 
 `fetch file` は `mv` が成功したかどうかだけを表す．上の例は移動はできたが

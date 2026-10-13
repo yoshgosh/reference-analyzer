@@ -211,11 +211,11 @@ notify_result() {
     body=":rotating_light: Failed: $(subject)
 $(step_lines)"
     [ -n "${ERROR_MESSAGE:-}" ] && body="${body}
-error: \"$(tilde "$ERROR_MESSAGE")\""
+error: $(tilde "$ERROR_MESSAGE")"
   fi
 
   [ -n "${GUARD_WARNING:-}" ] && body="${body}
-warning: \"$(tilde "$GUARD_WARNING")\""
+warning: $(tilde "$GUARD_WARNING")"
   [ -n "${CITATION_KEY:-}" ] && body="${body}
 citation_key: \`${CITATION_KEY}\`"
   line="$(target_line)"; [ -n "$line" ] && body="${body}
