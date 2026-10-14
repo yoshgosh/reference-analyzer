@@ -125,7 +125,7 @@ Incoming Webhook は使えない．応答が `ok` という文字列だけで，
 見出しは3つで，`✅ Completed` はステップを出さない（全部 `completed` と分かっているため
 情報量がない）．`warning:` の行は見出しを変えず，どちらの見出しでも出る．
 
-`usage:` の行は `engine_raw.json` の `num_turns`・`usage`・`total_cost_usd` から作る
+最終行の `usage:` は `engine_raw.json` の `num_turns`・`usage`・`total_cost_usd` から作る
 （`engine_usage_summary`）．エンジンごとに形が違うので，まとめる関数はエンジン側に置く．
 
 ### 開始の通知は枠を取った直後に出す

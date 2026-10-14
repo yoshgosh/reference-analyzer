@@ -175,8 +175,7 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium
 ✅ Completed: Beyond ChatBots: ExploreLLM for Structured Thoughts…
 citation_key: `Ma2023BeyondChatbots`
 file: `~/Research/Papers/Ma2023BeyondChatbots.pdf`
-usage: 10 turns, 180k in / 4.2k out tokens, $0.14 (list price)
-run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 84sec
+run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 84sec, usage: 8 turns, 150k in / 5.1k out tokens, $0.15 (list price)
 ```
 
 ```
@@ -190,8 +189,7 @@ error: Notion への登録に失敗した: POST /pages が 502 で拒否され�
 retry: `ref --register 20261013-171025-53515`
 citation_key: `Reingold1981TidierDrawings`
 file: `~/Research/Papers/in_progress/tidier-drawings.pdf`
-usage: 11 turns, 205k in / 4.6k out tokens, $0.16 (list price)
-run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 63sec
+run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 63sec, usage: 9 turns, 170k in / 5.3k out tokens, $0.16 (list price)
 ```
 
 見出しは3つである．
@@ -226,7 +224,7 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 `warning:` の行は見出しを変えない．作業ディレクトリの祖先に `CLAUDE.md` があるときに出る
 （無関係な指示がAIに読み込まれるおそれがある）．
 
-`usage:` の行は AI の使用量である．ターン数，入力と出力のトークン数，API の定価で換算した
+最終行の `usage:` は AI の使用量である．ターン数，入力と出力のトークン数，API の定価で換算した
 金額を示す．サブスクリプションで使っている場合，金額は実際の請求額ではなく，利用上限の
 減り方の目安である．入力はターンごとに文脈全体を読み直す分を含むので，ターン数とほぼ比例する．
 AI を動かしていない実行（`ref --register` など）では出ない．

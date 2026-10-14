@@ -116,10 +116,12 @@ sys.stdout.write(json.dumps({"channel": sys.argv[1], "ts": sys.argv[2], "text": 
 }
 
 # 実行の属性（全メッセージ共通の最終行）
-run_meta() {  # [経過時間を出すなら 1]
+run_meta() {  # [経過時間と使用量を出すなら 1]
   printf 'run_id: `%s`, trigger: %s, model: %s / %s / %s' \
     "$RUN_ID" "${RUN_MODE:-unknown}" "$PAPER_ENGINE" "$PAPER_MODEL" "$PAPER_EFFORT"
   [ "${1:-}" = "1" ] && printf ', duration: %ssec' "$(elapsed)"
+  # AI を動かしていない実行（ref --register，AI の起動前の失敗）では出ない
+  [ "${1:-}" = "1" ] && [ -n "${USAGE_SUMMARY:-}" ] && printf ', usage: %s' "$USAGE_SUMMARY"
   return 0
 }
 
@@ -224,9 +226,6 @@ citation_key: \`${CITATION_KEY}\`"
 ${line}"
   line="$(with_line)"; [ -n "$line" ] && body="${body}
 ${line}"
-  # AI を動かしていない実行（ref --register，AI の起動前の失敗）では出ない
-  [ -n "${USAGE_SUMMARY:-}" ] && body="${body}
-usage: ${USAGE_SUMMARY}"
   body="${body}
 $(run_meta 1)"
 
