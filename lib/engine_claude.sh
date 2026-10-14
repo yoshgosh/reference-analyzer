@@ -20,11 +20,16 @@
 #
 #   --bare は使用しない（OAuth・キーチェーンを読まず ANTHROPIC_API_KEY を要求するため）．
 #
+#   --settings（sandbox）   Bash を OS のサンドボックスで動かし，ホーム全体の読み取りを
+#                           禁じて作業ディレクトリだけを許す（claude_sandbox_settings）．
+#                           --restricted でも --settings は効く．
+#
 # 起動前に ENGINE_UNSET_VARS（lib/core.sh）を外し，トークンを AI のプロセスへ渡さない．
 #
 # python3 は意図的に許可しない．--restricted が制限するのはファイルツールだけであり，
 # Bash 経由の python3 は作業ディレクトリ外を自由に読める（実測で確認済み）．
-# 残る迂回路は curl の file:// であり，Web から代表画像を取るために残している．
+# curl も file:// や -d @<ファイル> でローカルのファイルを読めるが，サンドボックスが
+# 読み取りそのものを止める．文字列の拒否ルールでは書き方を変えれば通るので使わない．
 
 # ALLOWED_COMMANDS（lib/analyze.sh の単一の定義元）から --allowedTools を組み立てる
 claude_allowed_tools() {
@@ -33,6 +38,30 @@ claude_allowed_tools() {
   for cmd in $ALLOWED_COMMANDS; do
     printf 'Bash(%s *)\n' "$cmd"
   done
+}
+
+# サンドボックスの設定（JSON）．実測で確認済み（2026-10-14, claude 2.1.296）:
+#
+#   denyRead のホーム配下は curl file:// で読めない（exit 37）．-d @ 等も同じく止まる
+#   allowRead に挙げた作業ディレクトリは，denyRead の中にあっても読める
+#   network.allowedDomains を "*" にしないと Web へ出られない（既定は全拒否）
+#   allowUnsandboxedCommands=false で，AI がサンドボックスを外して再実行することを禁じる
+#   書き込みは既定でカレント（作業ディレクトリ）に限られる
+#
+# ホーム全体を禁じるので，.env，~/.ssh，他の論文，過去の会話の記録（~/.claude）に届かない．
+# リポジトリと PAPER_ROOT がホームの外にある場合に備え，これらも名前で挙げる．
+claude_sandbox_settings() {  # <作業ディレクトリ>
+  py -c '
+import json, os, sys
+work, *deny = (os.path.realpath(p) for p in sys.argv[1:])
+print(json.dumps({"sandbox": {
+    "enabled": True,
+    "autoAllowBashIfSandboxed": False,
+    "allowUnsandboxedCommands": False,
+    "network": {"allowedDomains": ["*"]},
+    "filesystem": {"denyRead": deny, "allowRead": [work]},
+}}))
+' "$1" "$HOME" "$REPO_ROOT" "$PAPER_ROOT"
 }
 
 run_engine() {  # <作業ディレクトリ> <プロンプトのパス> <生出力のパス> <標準エラーのパス>
@@ -62,6 +91,9 @@ EOF
     unset_args[${#unset_args[@]}]="$var"
   done
 
+  local sandbox
+  sandbox="$(claude_sandbox_settings "$work")" || return 1
+
   (
     cd "$work" || exit 1
     env ${unset_args[@]+"${unset_args[@]}"} claude -p "$(cat "$prompt_file")" \
@@ -74,6 +106,7 @@ EOF
       --strict-mcp-config \
       --tools "Read,Write,Bash,WebSearch,WebFetch,Glob,Grep" \
       --allowedTools "${tools[@]}" \
+      --settings "$sandbox" \
       </dev/null >"$raw" 2>"$errout"
   )
 }
