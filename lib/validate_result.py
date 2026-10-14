@@ -7,16 +7,19 @@ engine_raw.json は claude -p --output-format json の出力である．
 構造化出力は structured_output に入るが，取れない場合は result フィールドの
 本文から JSON を取り出すことを試みる（取りこぼしを調査可能にするため）．
 
+citation_key は正規化して書き出す（改名と Notion の Citation Key にそのまま使う）．
+
 代表画像は記録ディレクトリへ image.<拡張子> としてコピーし，image_file をその名前に
 書き換える．作業ディレクトリは成功時に消えるが，記録は残るので，登録だけを
 やり直せる（ref --register）．
-検証に通らなければ終了コード 1 を返す．
+検証に通らなければ，理由を標準エラーの最後の行に書いて終了コード 1 を返す．
 """
 import json
 import os
 import re
 import shutil
 import sys
+import unicodedata
 
 IMAGE_MAX_BYTES = 20 * 1024 * 1024  # Notion の1回のアップロードの上限
 
@@ -57,6 +60,19 @@ def normalize(obj, schema):
     return out
 
 
+def normalize_key(key):
+    """ASCII 英数字と . _ - だけを残す．
+    先に NFKD 分解して結合文字を落とすので，Müller は Muller になる（Mller にはならない）．"""
+    s = unicodedata.normalize("NFKD", key)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return "".join(c for c in s if c.isascii() and (c.isalnum() or c in "._-"))
+
+
+def key_is_sane(key):
+    """非ASCII の著者名がローマ字化されずに落ちると数字だけのキーが残るため，英字を必須とする．"""
+    return len(key) >= 3 and any(c.isascii() and c.isalpha() for c in key)
+
+
 def image_ext(path):
     with open(path, "rb") as fh:
         head = fh.read(12)
@@ -68,8 +84,11 @@ def image_ext(path):
     return None
 
 
-def check_content(r, schema, work_dir, record_dir):
+def check_content(r, raw_key, schema, work_dir, record_dir):
     """登録に使う内容を確かめる．問題があれば理由を返す．"""
+    if not key_is_sane(r["citation_key"]):
+        return (f"citation_key が妥当でない（正規化後: {r['citation_key']!r} / "
+                f"正規化前: {raw_key!r}）．非ASCII名のローマ字化に失敗した可能性がある")
     if r["year"] and not re.fullmatch(r"\d{4}", r["year"]):
         return f"year が西暦4桁でない: {r['year']!r}"
     if r["rating"] not in schema["properties"]["rating"]["enum"]:
@@ -137,10 +156,12 @@ def main():
         return 1
 
     r = normalize(obj, schema)
+    raw_key = r["citation_key"]
+    r["citation_key"] = normalize_key(raw_key)
 
     # failed のときは登録しないので，内容は確かめずにそのまま記録する
     if r["status"] == "success":
-        problem = check_content(r, schema, work_dir, record_dir)
+        problem = check_content(r, raw_key, schema, work_dir, record_dir)
         if problem:
             print(f"検証失敗: {problem}", file=sys.stderr)
             return 1

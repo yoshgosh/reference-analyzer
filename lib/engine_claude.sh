@@ -179,9 +179,9 @@ engine_transcript_path() {  # <session_id>
   find "$HOME/.claude/projects" -type f -name "$1.jsonl" 2>/dev/null | head -1
 }
 
-engine_save_transcript() {  # <作業ディレクトリ> <記録ディレクトリ> <session_id>
-  local record_dir="$2" src
-  src="$(engine_transcript_path "$3")"
+engine_save_transcript() {  # <記録ディレクトリ> <session_id>
+  local record_dir="$1" src
+  src="$(engine_transcript_path "$2")"
   [ -z "$src" ] && return 1
   cp "$src" "$record_dir/transcript.jsonl" || return 1
   return 0

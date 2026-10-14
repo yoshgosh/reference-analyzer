@@ -34,6 +34,21 @@ slack_call() {  # <メソッド名> <応答の保存先>
   return "$rc"
 }
 
+# メッセージを投稿する．ts を渡すとそのメッセージを書き換える（chat.update）．
+# 書き換えにはチャンネルIDが要るので，投稿の応答から得た SLACK_CHANNEL_ID を優先する．
+slack_send() {  # <応答の保存先> <本文> [書き換える ts]
+  local method=chat.postMessage
+  [ -n "${3:-}" ] && method=chat.update
+  py -c '
+import json, sys
+channel, text, ts = sys.argv[1:4]
+body = {"channel": channel, "text": text}
+if ts:
+    body["ts"] = ts
+sys.stdout.write(json.dumps(body, ensure_ascii=False))
+' "${SLACK_CHANNEL_ID:-$SLACK_CHANNEL}" "$2" "${3:-}" | slack_call "$method" "$1"
+}
+
 slack_ok() {  # <応答のパス>
   [ -f "$1" ] || return 1
   [ "$(json_get "$1" ok)" = "True" ] && return 0
@@ -60,11 +75,7 @@ ${line}"
 $(run_meta)"
 
   resp="$RECORD_DIR/slack_post.json"
-  if ! py -c '
-import json, os, sys
-sys.stdout.write(json.dumps({"channel": os.environ["SLACK_CHANNEL"], "text": sys.argv[1]},
-                            ensure_ascii=False))
-' "$text" | slack_call chat.postMessage "$resp"; then
+  if ! slack_send "$resp" "$text"; then
     log_msg "Slack: 開始通知の送信に失敗した（curl）"
     return 0
   fi
@@ -90,22 +101,14 @@ slack_finish() {  # <本文>
   if [ -z "$SLACK_TS" ]; then
     # 開始通知が出せていなかった場合は，結果だけでも新規に投稿する
     resp="$RECORD_DIR/slack_post.json"
-    py -c '
-import json, os, sys
-sys.stdout.write(json.dumps({"channel": os.environ["SLACK_CHANNEL"], "text": sys.argv[1]},
-                            ensure_ascii=False))
-' "$text" | slack_call chat.postMessage "$resp" || true
+    slack_send "$resp" "$text" || true
     slack_ok "$resp" && log_msg "Slack: 結果を新規に投稿した" \
       || log_msg "Slack: 結果の投稿に失敗した（error=$(json_get "$resp" error)）"
     return 0
   fi
 
   resp="$RECORD_DIR/slack_update.json"
-  py -c '
-import json, sys
-sys.stdout.write(json.dumps({"channel": sys.argv[1], "ts": sys.argv[2], "text": sys.argv[3]},
-                            ensure_ascii=False))
-' "$SLACK_CHANNEL_ID" "$SLACK_TS" "$text" | slack_call chat.update "$resp" || true
+  slack_send "$resp" "$text" "$SLACK_TS" || true
 
   if slack_ok "$resp"; then
     log_msg "Slack: 結果に書き換えた"

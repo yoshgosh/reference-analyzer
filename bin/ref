@@ -89,7 +89,7 @@ register_again() {  # <run_id>
   TARGET_KIND="$(json_get "$RECORD_DIR/target.json" kind)"
   TARGET_LABEL="$(json_get "$RECORD_DIR/target.json" label)"
   TARGET_PATH="$(json_get "$RECORD_DIR/target.json" path)"
-  CITATION_KEY="$(normalize_key "$(json_get "$RESULT_JSON" citation_key)")"
+  CITATION_KEY="$(json_get "$RESULT_JSON" citation_key)"
   TITLE="$(json_get "$RESULT_JSON" title)"
   CURRENT_PATH="$TARGET_PATH"
   GUARD_WARNING=""
@@ -263,22 +263,7 @@ if [ "$AUX_BYTES" -gt "$PAPER_AUX_MAX_BYTES" ]; then
   exit 2
 fi
 
-# ---------------------------------------------------------------- プロンプトの記述
-
-if [ "$TARGET_KIND" = url ]; then
-  TARGET_DESC="$(printf '%s\n' \
-    "- 種別: URL（Webページ・GitHubリポジトリ等）" \
-    "- URL: $TARGET" \
-    "" \
-    "このURLの資料のみを処理せよ．改名・保存するファイルは無い．")"
-else
-  TARGET_DESC="$(printf '%s\n' \
-    "- 種別: PDFファイル" \
-    "- ファイル: ./$TARGET_LABEL" \
-    "- このファイルは作業ディレクトリ内のコピーである．" \
-    "" \
-    "この1本を対象として処理せよ．")"
-fi
+# ---------------------------------------------------------------- 補助資料の記述
 
 AUX_DESC=""      # プロンプトに渡す一覧（全件）
 AUX_SUMMARY=""   # 通知の with: に出す要約（50文字で打ち切る）
@@ -301,22 +286,14 @@ fi
 
 # ---------------------------------------------------------------- 経路ごとの2つの関数
 
-# 対象はコピーだけを AI に見せ，原本には触れさせない．
 # 補助資料は aux/ にまとめ，どれが対象かパスで分かるようにする．
+# 対象そのもののコピーは共有側（stage_target）が行う．
 prepare_target() {
-  local f dest
-  if [ "$TARGET_KIND" = file ]; then
-    if ! cp "$TARGET_PATH" "$WORK_DIR/$TARGET_LABEL"; then
-      ERROR_MESSAGE="作業ディレクトリへコピーできなかった: $TARGET_PATH"
-      return 1
-    fi
-    log_msg "作業ディレクトリへコピーした: $TARGET_LABEL"
-  fi
+  local f
   if [ "$AUX_COUNT" -gt 0 ]; then
     mkdir -p "$WORK_DIR/aux"
     for f in ${AUX_FILES[@]+"${AUX_FILES[@]}"}; do
-      dest="$WORK_DIR/aux/$(basename "$f")"
-      cp "$f" "$dest" 2>/dev/null || log_msg "警告: 補助資料をコピーできなかった: $f"
+      cp "$f" "$WORK_DIR/aux/$(basename "$f")" 2>/dev/null || log_msg "警告: 補助資料をコピーできなかった: $f"
     done
     log_msg "補助資料をコピーした: ${AUX_COUNT} ファイル（$((AUX_BYTES / 1024))KB）"
   fi

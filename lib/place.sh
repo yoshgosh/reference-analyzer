@@ -2,12 +2,12 @@
 # 配置：改名と移動
 #
 # ユーザーのファイルに触る処理はこのファイルだけに閉じている．
-# 一意な名前の決定は「着地させる関数」が行い，配置ロックを取って
+# 一意な名前の決定は place_file が行い，配置ロックを取って
 # 「空き名の確認」と「実際の移動」の間に別プロセスが割り込まないようにする．
 #
-# 対象を改名する処理（rename_step）は両経路で共有する．
-#   手動 … 原本をその場で改名して終わり（移動しない）
-#   自動 … in_progress のファイルを改名し，続けて move_step で PAPER_ROOT へ出す
+#   手動 … 原本をその場で改名して終わり（rename_step）
+#   自動 … inbox から in_progress へ取り込み（place_file），その場で改名し（rename_step），
+#          PAPER_ROOT へ出す（move_step）
 #
 # ユーザーのファイルは作業ディレクトリに入らない．入るのはコピーだけである．
 
@@ -22,44 +22,18 @@ unique_path() {  # <ディレクトリ> <基本名> <拡張子>
   printf '%s' "$cand"
 }
 
-# そのファイルがあるディレクトリ内で <Key>.<拡張子> に改名し，新しいパスを出力する
-rename_to_key() {  # <パス> <CitationKey>
-  local src="$1" key="$2" dir ext lock dest
-  dir="$(cd "$(dirname "$src")" && pwd)"
-  case "$src" in
-    *.*) ext=".${src##*.}" ;;
-    *)   ext="" ;;
-  esac
-
-  lock="$(locks_dir)/place.lock"
-  acquire_lock "$lock" 150 || log_msg "警告: 配置ロックを取得できなかった．そのまま続行する"
-  dest="$(unique_path "$dir" "$key" "$ext")"
-  if mv -n "$src" "$dest" 2>/dev/null; then
-    release_lock "$lock"
-    log_msg "改名した: $(basename "$src") -> $(basename "$dest")"
-    printf '%s' "$dest"
-    return 0
-  fi
-  release_lock "$lock"
-  log_msg "改名に失敗した: $src"
-  return 1
-}
-
-# 指定ディレクトリへ移動し，新しいパスを出力する．名前は維持する（同名があれば _2, _3）
-move_into() {  # <パス> <移動先ディレクトリ> [基本名を差し替える場合の名前]
-  local src="$1" dir="$2" base="${3:-}" ext lock dest name
+# ファイルを <ディレクトリ>/<基本名>.<拡張子> へ動かし，新しいパスを出力する．
+# 基本名を省くと元の名前を保つ．拡張子は常に元のものを保つ．
+# 同名があれば _2, _3 … を付ける．同じファイルを2プロセスが取り合った場合は，
+# 負けた側の mv が失敗する（自動どうしの排他はこれに頼っている）．
+place_file() {  # <パス> <移動先ディレクトリ> [基本名]
+  local src="$1" dir="$2" name base ext lock dest
   name="$(basename "$src")"
-  if [ -z "$base" ]; then
-    case "$name" in
-      *.*) base="${name%.*}"; ext=".${name##*.}" ;;
-      *)   base="$name"; ext="" ;;
-    esac
-  else
-    case "$name" in
-      *.*) ext=".${name##*.}" ;;
-      *)   ext="" ;;
-    esac
-  fi
+  case "$name" in
+    *.*) base="${name%.*}"; ext=".${name##*.}" ;;
+    *)   base="$name"; ext="" ;;
+  esac
+  base="${3:-$base}"
 
   mkdir -p "$dir"
   lock="$(locks_dir)/place.lock"
@@ -67,12 +41,12 @@ move_into() {  # <パス> <移動先ディレクトリ> [基本名を差し替�
   dest="$(unique_path "$dir" "$base" "$ext")"
   if mv -n "$src" "$dest" 2>/dev/null; then
     release_lock "$lock"
-    log_msg "移動した: $name -> $dest"
+    log_msg "配置した: $src -> $dest"
     printf '%s' "$dest"
     return 0
   fi
   release_lock "$lock"
-  log_msg "移動に失敗した: $src -> $dir"
+  log_msg "配置に失敗した: $src -> $dest"
   return 1
 }
 
@@ -90,7 +64,7 @@ rename_step() {  # <解析と登録が成功なら1>
   # 解析か登録が失敗したときは原本に触らない．ステップは skipped のままにする．
   [ "$ok" != "1" ] && return 1
 
-  if dest="$(rename_to_key "$TARGET_PATH" "$CITATION_KEY")"; then
+  if dest="$(place_file "$TARGET_PATH" "$(dirname "$TARGET_PATH")" "$CITATION_KEY")"; then
     step_completed rename
     CURRENT_PATH="$dest"
     return 0
@@ -104,7 +78,7 @@ rename_step() {  # <解析と登録が成功なら1>
 # 自動の place_result と，自動の実行を登録だけやり直す ref --register が共有する．
 move_step() {
   local dest
-  if dest="$(move_into "$CURRENT_PATH" "$PAPER_ROOT")"; then
+  if dest="$(place_file "$CURRENT_PATH" "$PAPER_ROOT")"; then
     step_completed move
     CURRENT_PATH="$dest"
     return 0

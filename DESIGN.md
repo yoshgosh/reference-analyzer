@@ -10,8 +10,9 @@
 ```
 run_one()
   枠を取る → 実行ディレクトリ作成 → 混入ガード → 開始を通知
-  → prepare_target   ← 経路ごと（手動=コピー／自動=mv で取り込む）
-  → analyze          ← 共有（プロンプト組立 → エンジン起動 → 出力検証）
+  → prepare_target   ← 経路ごと（手動=補助資料を aux/ へコピー／自動=mv で取り込む）
+  → stage_target     ← 共有（対象のコピーを作業ディレクトリに置く）
+  → analyze          ← 共有（下調べ → プロンプト組立 → エンジン起動 → 出力検証）
   → create_page      ← 共有（検証済みの出力から Notion ページを作る）
   → place_result     ← 経路ごと（手動=その場で改名／自動=その場で改名 ＋ 直下へ移動）
   → 記録 → 通知 → 枠を解放 → 片付け
@@ -26,7 +27,8 @@ run_one()
 ```
 
 そのため `rename_step`（対象をその場で改名する）を両経路で共有し，自動の `place_result` は
-それを呼んでから `move_into` で直下へ出すだけになっている．
+それを呼んでから `move_step` で直下へ出すだけになっている．取り込み・改名・移動はどれも
+`place_file`（空き名を決めて `mv` する）1つで行う．
 
 ## ファイル
 
@@ -37,8 +39,8 @@ run_one()
   lib/process_inbox.sh    inbox の1件を処理する
 
 共有
-  lib/run_one.sh          1資源の処理の流れ（骨格）
-  lib/analyze.sh          プロンプト組立 → エンジン起動 → 出力検証 → Notion への登録
+  lib/run_one.sh          1資源の処理の流れ（骨格）．対象のコピー
+  lib/analyze.sh          下調べ → プロンプト組立 → エンジン起動 → 出力検証 → Notion への登録
   lib/place.sh            改名と移動（ユーザーのファイルに触るのはここだけ）
   lib/core.sh             環境・ログ・ロック・同時実行の枠・ステップ・混入ガード
 
@@ -47,7 +49,7 @@ run_one()
   lib/notion.py           Notion API（タグ一覧の取得，ページの作成）
   lib/pdf_prep.py         PDF の下調べ（本文テキスト・pdfinfo・pdfimages -list）
   lib/notify_slack.sh     Slack 通知
-  lib/validate_result.py  最終出力の検証と正規化，代表画像の保存
+  lib/validate_result.py  最終出力の検証と正規化（Citation Key を含む），代表画像の保存
   lib/cleanup.sh          保存期間を過ぎた記録の削除
   launchd/install.sh      launchd エージェントの導入・解除・状態確認
 
@@ -57,15 +59,14 @@ run_one()
   schema/result.schema.json     AI の最終出力スキーマ
 ```
 
-**ユーザーのファイルに触る処理は `lib/place.sh` だけに閉じている**（`rename_to_key` と
-`move_into`）．`lib/analyze.sh` と `lib/core.sh` はファイルの改名・移動を行わない．
+**ユーザーのファイルを動かす処理は `lib/place.sh` だけに閉じている**（`place_file`）．
+`lib/analyze.sh` と `lib/core.sh` はファイルの改名・移動を行わない．
 
 エンジンの差分は `lib/engine_<名前>.sh` に閉じているので，別のエンジンは共有部分に
 手を入れずに追加できる．
 
-一意な名前の決定は「着地させる関数」が行う．手動は `rename_to_key` が原本のディレクトリ内で
-解決する．自動は `in_progress` で `rename_to_key`，直下で `move_into` がそれぞれ解決するので，
-同名があれば `<Key>_2.pdf` になる．取り込みのときも `move_into` を使うため，`in_progress` に
+一意な名前は `place_file` が配置ロックの中で決める．改名は原本のディレクトリ内，移動は移動先で
+解決するので，同名があれば `<Key>_2.pdf` になる．取り込みも同じ関数なので，`in_progress` に
 同名が居れば `paper_2.pdf` に逃がす．
 
 ## ユーザーのファイルは作業ディレクトリに入らない
@@ -87,8 +88,8 @@ run_one()
 | `fetch` | `fetch file` | 自動のみ．`inbox` → `in_progress` へ `mv` | シェル |
 | `analyze` | `analyze source` | 出力が検証に通り，`status` == `success` | AI |
 | `create` | `create page` | `lib/notion.py register` が成功 | シェル |
-| `rename` | `rename file` | `rename_to_key` | シェル |
-| `move` | `move file` | 自動のみ．`in_progress` → 直下へ `mv` | シェル |
+| `rename` | `rename file` | `rename_step`（`place_file`） | シェル |
+| `move` | `move file` | 自動のみ．`in_progress` → 直下へ `mv`（`move_step`） | シェル |
 
 AI が担うのは `analyze` だけである．内部のキーは表示名の動詞そのものであり，語を二重に持たない．
 改名・移動は `create` まで成功したときだけ行う．
@@ -209,7 +210,7 @@ engine 層に置いている．
 |---|---|
 | `--restricted` | `Read`/`Write`/`Glob`/`Grep` を作業ディレクトリに限定する．user/project/local の設定ファイルも無視する |
 | `--strict-mcp-config`（`--mcp-config` なし） | MCP を1つも読み込まない（コネクタ経由の流入） |
-| `--allowedTools` | 許可した5コマンド以外の Bash を拒否する |
+| `--allowedTools` | 許可した5コマンド以外の Bash を拒否する（ただし下記） |
 | `--permission-mode dontAsk` | 許可リスト外は確認待ちにならず拒否される（無人実行で止まらない） |
 | `env -u`（`ENGINE_UNSET_VARS`） | `.env` の変数とトークンを AI のプロセスへ渡さない |
 | `--settings`（sandbox） | Bash を OS のサンドボックスで動かす．ホーム全体の読み取りを禁じ，今回の作業ディレクトリだけを許す |
@@ -220,6 +221,10 @@ engine 層に置いている．
 ```
 ALLOWED_COMMANDS="pdftotext pdfimages pdftoppm pdfinfo curl"
 ```
+
+許可リストは厳密な境界ではない．Claude Code は読み取りだけのコマンド（`grep`・`head` 等）を
+許可リストに無くても通す（`curl … | grep` が通ったことを実測で確認した）．作業ディレクトリの
+外を読めない保証はサンドボックスが担う．
 
 **`python3` は許可しない．** `--restricted` が制限するのはファイルツールだけで，Bash 経由の
 `python3` は作業ディレクトリ外を自由に読める．
@@ -411,12 +416,15 @@ image_caption 代表画像のキャプション
 図表が存在するのに取得できなければ `failed` とし，ページは作らない（代表画像は要約の一部であり，
 入っていない登録を完了とはみなさない）．対象に図表がそもそも無ければ画像なしで `success` とする．
 
-`citation_key` は正規化してから使う．NFKD 分解して ASCII だけを残すので `Müller` は
-`Muller` になる．正規化後に空・3文字未満・英字を含まない場合は妥当でないとして失敗にする．
+`citation_key` は `validate_result.py` が正規化して `result.json` に書く．改名と Notion の
+Citation Key はこの値をそのまま使うので，ファイル名とページが必ず一致する．NFKD 分解して
+ASCII だけを残すので `Müller` は `Muller` になる．正規化後に3文字未満・英字を含まない場合は
+検証失敗とし，理由（正規化前後の値）を通知の `error:` に出す．
 
 ### 下調べはスクリプトが行う
 
-対象が PDF のとき，`build_prompt` の前に `lib/pdf_prep.py` が次を済ませる．
+対象が PDF のとき，`target_description`（「今回の対象」の記述を作る）が `lib/pdf_prep.py` を
+呼んで次を済ませる．
 
 - `pdftotext -layout` の結果を作業ディレクトリの `fulltext.txt` に置く．各ページの先頭に
   `--- p.<頁> ---` を入れ，図のキャプションから頁を引けるようにする
@@ -437,10 +445,22 @@ AI が必要な範囲だけを読む今の形より高くつく．
 2. 図がベクタで取れない場合は公式サイト（arXiv HTML版等）から取る
 3. それも取れない場合は `pdftoppm` でページを画像化し，`-x -y -W -H` で図の範囲を切り出す
 
-理由は3つある．**確実性** — PDFは必ず手元にあるが，HTMLはarXivの一部にしか無い．
-**費用** — HTMLは「200の確認 → img一覧 → 取得」で3回，PDFは `-list` → `-png` で2回であり，
-HTMLが無い場合はそのうえでPDF経路を全部やることになる．**混入防止** — PDF抽出は対象ファイル
-自身からの取得なので混入の余地がないが，HTML経路は別論文の図を拾う余地が残る．
+`pdfimages` を先にする理由は3つある．**確実性** — PDFは必ず手元にあるが，HTMLはarXivの
+一部にしか無い．**費用** — 埋め込み画像があれば `-png` と確認の2ターンで済む．**混入防止** —
+PDF抽出は対象ファイル自身からの取得なので混入の余地がないが，HTML経路は別論文の図を拾う
+余地が残る．
+
+HTML版を切り出しより先にするのは，期待値で安いからである（2026-10-14，記録の残る約20件で実測）．
+
+| 経路 | 画像の取得に使ったターン |
+|---|---|
+| HTML版から取れた | 平均 3.2 |
+| HTML版を試して取れなかった | 平均 1.4（無駄になる分） |
+| 切り出し | 平均 5.4（範囲の微調整で 7〜9 になることがある） |
+
+HTML版から取れる確率を p とすると，HTML が先なら 3.2p + 6.8(1−p)，切り出しが先なら約 5.4 で，
+p ≳ 0.4 なら HTML が先のほうが安い．実績は p ≈ 0.6 だった．画質も HTML版（元画像）のほうが良い．
+減らす余地があるのは順序ではなく切り出しのやり直しのほうである．
 
 ページ全体を代表画像にはしない（本文が写り込む）．
 
@@ -483,11 +503,12 @@ HTMLが無い場合はそのうえでPDF経路を全部やることになる．*
 `PAPER_ENGINE=codex` は受け付けるが `lib/engine_codex.sh` が無く，明示的なエラーで止まる．
 `codex` コマンド自体も未インストールである．
 
-`lib/engine_codex.sh` に実装すべき関数は次の5つで，共有側に手を入れる必要はない．
+`lib/engine_codex.sh` に実装すべき関数は次の6つで，共有側に手を入れる必要はない．
 
 ```
-run_engine              エンジンを起動して生出力を書く
+run_engine              エンジンを起動して生出力を書く（ENGINE_UNSET_VARS を外して起動する）
 engine_error_summary    エンジン自身の失敗を1行にまとめる
+engine_usage_summary    使用量を1行にまとめる（通知の usage:）
 engine_session_id       生出力から session_id を取る
 engine_transcript_path  session_id から transcript のパスを得る
 engine_save_transcript  transcript を記録ディレクトリへ保存する

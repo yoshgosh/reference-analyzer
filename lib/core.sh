@@ -113,28 +113,6 @@ elapsed() {
   printf '%s' "$((n - STARTED_AT))"
 }
 
-# ---------------------------------------------------------------- Citation Key
-
-# ASCII 英数字・. _ - のみを残す．
-# 先に NFKD 分解して結合文字を落とすため，Müller は Muller になる（Mller にはならない）．
-normalize_key() {
-  printf '%s' "$1" | py -c '
-import sys, unicodedata
-s = unicodedata.normalize("NFKD", sys.stdin.read())
-s = "".join(c for c in s if not unicodedata.combining(c))
-sys.stdout.write("".join(c for c in s if c.isascii() and (c.isalnum() or c in "._-")))
-'
-}
-
-# 非ASCII の著者名がローマ字化されずに落ちると数字だけのキーが残るため，英字を必須とする
-key_is_sane() {  # <正規化済みキー>
-  local k="$1"
-  [ -n "$k" ] || return 1
-  [ "${#k}" -ge 3 ] || return 1
-  printf '%s' "$k" | LC_ALL=C grep -q '[A-Za-z]' || return 1
-  return 0
-}
-
 # ---------------------------------------------------------------- ロック
 
 locks_dir() { printf '%s' "$PAPER_WORK_DIR/.locks"; }
@@ -233,8 +211,8 @@ release_slot() {
 #   fetch   fetch file     自動のみ．inbox から in_progress へ移した（シェル）
 #   analyze analyze source 資料を解析した（AI：status == success かつ出力が検証に通った）
 #   create  create page    Notion ページを作成した（シェル：lib/notion.py）
-#   rename  rename file    Citation Key へ改名した（シェル：rename_to_key）
-#   move    move file      自動のみ．PAPER_ROOT へ移した（シェル：move_into）
+#   rename  rename file    Citation Key へ改名した（シェル：rename_step）
+#   move    move file      自動のみ．PAPER_ROOT へ移した（シェル：move_step）
 #
 # キーは表示名の動詞そのものである（表示名は step_label が組み立てる）．
 #

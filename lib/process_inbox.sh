@@ -44,12 +44,12 @@ STEP_LIST="fetch analyze create rename move"
 # 開始の通知より前に確定している必要がある（取り込みはそのあとで走る）
 CURRENT_PATH="$INBOX_PATH"
 
-# ① 取り込む．move_into は配置ロックの中で空き名を決めてから mv するので，
+# ① 取り込む．place_file は配置ロックの中で空き名を決めてから mv するので，
 # 同名が既に in_progress にあれば _2 に逃がし，同じファイルを2プロセスが
 # 取り合った場合は負けた側の mv が失敗する．
 prepare_target() {
   local dest
-  if ! dest="$(move_into "$INBOX_PATH" "$PAPER_IN_PROGRESS_DIR")"; then
+  if ! dest="$(place_file "$INBOX_PATH" "$PAPER_IN_PROGRESS_DIR")"; then
     step_failed fetch
     ERROR_MESSAGE="inbox から取り込めなかった（他のプロセスが先に取ったか，ファイルが無くなった）"
     return 1
@@ -67,20 +67,6 @@ prepare_target() {
     ERROR_MESSAGE="この資料は既に処理中である"
     return 1
   fi
-
-  TARGET_DESC="$(printf '%s\n' \
-    "- 種別: PDFファイル" \
-    "- ファイル: ./$TARGET_LABEL" \
-    "- このファイルは作業ディレクトリ内のコピーである．" \
-    "" \
-    "この1本のみを処理せよ．")"
-
-  # ② 以降は手動と同じ．コピーだけを AI に見せ，原本には触れさせない．
-  if ! cp "$TARGET_PATH" "$WORK_DIR/$TARGET_LABEL"; then
-    ERROR_MESSAGE="作業ディレクトリへコピーできなかった"
-    return 1
-  fi
-  log_msg "作業ディレクトリへコピーした: $TARGET_LABEL"
   return 0
 }
 
