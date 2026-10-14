@@ -20,6 +20,8 @@
 #
 #   --bare は使用しない（OAuth・キーチェーンを読まず ANTHROPIC_API_KEY を要求するため）．
 #
+# 起動前に ENGINE_UNSET_VARS（lib/core.sh）を外し，トークンを AI のプロセスへ渡さない．
+#
 # python3 は意図的に許可しない．--restricted が制限するのはファイルツールだけであり，
 # Bash 経由の python3 は作業ディレクトリ外を自由に読める（実測で確認済み）．
 # 残る迂回路は curl の file:// であり，Web から代表画像を取るために残している．
@@ -50,9 +52,19 @@ run_engine() {  # <作業ディレクトリ> <プロンプトのパス> <生出�
 $(claude_allowed_tools)
 EOF
 
+  # 秘密情報を AI に渡さない．load_env は .env を export するので，外さないと
+  # AI が実行するコマンドから見える（curl で外へ送れてしまう）．
+  # unset ではなく env -u で外す．引数（--model 等）は外す前に展開されるので
+  # PAPER_MODEL のように .env に書いた設定も使える
+  local unset_args=() var
+  for var in $ENGINE_UNSET_VARS; do
+    unset_args[${#unset_args[@]}]="-u"
+    unset_args[${#unset_args[@]}]="$var"
+  done
+
   (
     cd "$work" || exit 1
-    claude -p "$(cat "$prompt_file")" \
+    env ${unset_args[@]+"${unset_args[@]}"} claude -p "$(cat "$prompt_file")" \
       --model "$PAPER_MODEL" \
       --effort "$PAPER_EFFORT" \
       --output-format json \
@@ -98,6 +110,28 @@ engine_error_summary() {  # <生出力のパス>
   # claude -p は result に人が読める説明を入れる（例: セッション上限の回復時刻）
   [ -n "$result" ] && printf ' — %s' "$result"
   return 0
+}
+
+# 使用量を1行にまとめる（通知の usage: 行）．取れなければ空文字列を返す．
+# 金額は API の定価で換算した値である．サブスクリプションでは実際の請求額ではない．
+# in は入力の合計（キャッシュの読み書きを含む）．ターンごとに文脈全体を読み直すので，
+# ターン数とほぼ比例して増える．
+engine_usage_summary() {  # <生出力のパス>
+  [ -s "$1" ] || return 0
+  py -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+    u = d["usage"]
+    tin = sum(u.get(k) or 0 for k in
+              ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    tout = u.get("output_tokens") or 0
+    turns, cost = d["num_turns"], d["total_cost_usd"]
+except Exception:
+    sys.exit(0)
+k = lambda n: f"{n / 1000:.1f}k" if n < 10000 else f"{n / 1000:.0f}k"
+sys.stdout.write(f"{turns} turns, {k(tin)} in / {k(tout)} out tokens, ${cost:.2f} (list price)")
+' "$1"
 }
 
 engine_session_id() {  # <生出力のパス>

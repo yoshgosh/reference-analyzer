@@ -42,6 +42,15 @@ load_env() {
   # Slack は Web API のみを使う（Incoming Webhook は ts を返さず書き換えができない）
   SLACK_API="${SLACK_API:-https://slack.com/api}"
 
+  # AI に渡さない変数（lib/engine_*.sh が起動前に外す）．
+  # .env に書いたものは全部外す．後から秘密情報を足しても漏れないようにするためである．
+  # 秘密情報はシェルの環境から来ることもあるので，既知のものは名前でも外す．
+  # PATH と HOME は claude の起動に要るので残す．
+  ENGINE_UNSET_VARS="NOTION_TOKEN SLACK_BOT_TOKEN"
+  if [ -f "$REPO_ROOT/.env" ]; then
+    ENGINE_UNSET_VARS="$ENGINE_UNSET_VARS $(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p' "$REPO_ROOT/.env" | grep -vx 'PATH\|HOME' | tr '\n' ' ')"
+  fi
+
   if [ -z "${NOTION_TOKEN:-}" ]; then
     echo "reference-analyzer: NOTION_TOKEN が未設定である（.env を確認せよ）" >&2
     return 1

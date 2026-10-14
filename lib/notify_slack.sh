@@ -224,6 +224,9 @@ citation_key: \`${CITATION_KEY}\`"
 ${line}"
   line="$(with_line)"; [ -n "$line" ] && body="${body}
 ${line}"
+  # AI を動かしていない実行（ref --register，AI の起動前の失敗）では出ない
+  [ -n "${USAGE_SUMMARY:-}" ] && body="${body}
+usage: ${USAGE_SUMMARY}"
   body="${body}
 $(run_meta 1)"
 

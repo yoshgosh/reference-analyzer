@@ -8,7 +8,8 @@
 #
 # 入出力:
 #   入力  プロンプト（argv）と作業ディレクトリ（AI のカレント．対象と aux/ だけが入る）
-#   出力  RESULT_* のグローバル（構造化出力を検証・正規化したもの），NOTION_URL
+#   出力  RESULT_* のグローバル（構造化出力を検証・正規化したもの），NOTION_URL，
+#         USAGE_SUMMARY（AI の使用量．通知の usage: 行）
 #   副作用 Notion ページの作成，作業ディレクトリ内の一時ファイル，記録ディレクトリへの保存
 
 # AI が実行できるコマンドの唯一の定義元．
@@ -62,11 +63,23 @@ json.dump(dict(zip(keys, sys.argv[2:])), open(sys.argv[1], "w", encoding="utf-8"
     "$([ "$TARGET_KIND" = url ] && printf '%s' "$TARGET_LABEL")" "$TARGET_LABEL"
 }
 
+# PDF の決まった下調べを済ませ，「今回の対象」に足す記述を出力する（lib/pdf_prep.py）．
+# 本文テキストは作業ディレクトリの fulltext.txt に置く．URL では何もしない．
+pdf_prep() {
+  local pdf="$WORK_DIR/$TARGET_LABEL"
+  [ "$TARGET_KIND" = file ] && [ -f "$pdf" ] || return 0
+  py "$REPO_ROOT/lib/pdf_prep.py" "$pdf" "$WORK_DIR/fulltext.txt" 2>>"$RUN_LOG" || true
+}
+
 # AI を実行し，出力を検証して RESULT_* を設定する．
 # 返り値 0 = status が success かつ citation_key が妥当，1 = それ以外
 analyze() {  # <対象の記述> <補助資料の記述>
   save_target
-  if ! build_prompt "$1" "$2"; then
+  local prep
+  prep="$(pdf_prep)"
+  [ -n "$prep" ] && log_msg "PDF の下調べを済ませた（fulltext.txt）"
+  if ! build_prompt "$1${prep:+
+$prep}" "$2"; then
     log_msg "$ERROR_MESSAGE"
     step_failed analyze
     return 1
@@ -85,6 +98,8 @@ analyze() {  # <対象の記述> <補助資料の記述>
 
   SESSION_ID="$(engine_session_id "$raw")"
   [ -n "$SESSION_ID" ] && log_msg "session_id=$SESSION_ID"
+  USAGE_SUMMARY="$(engine_usage_summary "$raw")"
+  [ -n "$USAGE_SUMMARY" ] && log_msg "使用量: $USAGE_SUMMARY"
 
   # エンジン自身が失敗した場合は，その理由を優先して報告する．
   # 利用上限（429）などを「出力JSONの検証に失敗」として埋もれさせてはならない．
