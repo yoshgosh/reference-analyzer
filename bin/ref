@@ -3,6 +3,7 @@
 #
 #   ref <対象>                        対象を1つ処理する（PDFファイル または URL）
 #   ref <対象> --with <補助資料...>   同じ文献を補助する資料を添えて処理する
+#   ref --register <run_id>           解析済みの実行について，Notion への登録だけをやり直す
 #
 # 1コマンド = 1文献 = AI プロセス1回 = Notion 1ページ．
 # 補助資料はファイル・フォルダ・URL を混在できる．フォルダは展開せず，
@@ -19,16 +20,130 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/lib/core.sh"
 
 usage() {
-  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
   ''|-h|--help|help) usage; exit "$([ -z "${1:-}" ] && echo 2 || echo 0)" ;;
 esac
 
+# ---------------------------------------------------------------- 結果の表示
+
+# 標準出力のラベルは通知と同じ語彙を使う（語を二重に持たない）
+report_completed() {
+  echo "Completed: ${TITLE}"
+  echo "citation_key: ${CITATION_KEY}"
+  echo "notion: ${NOTION_URL}"
+  if [ "$TARGET_KIND" = url ]; then
+    echo "url: ${TARGET_LABEL}"
+  elif [ -n "${CURRENT_PATH:-}" ]; then
+    echo "file: ${CURRENT_PATH}"
+  fi
+  [ -n "${GUARD_WARNING:-}" ] && echo "warning: ${GUARD_WARNING}"
+  return 0
+}
+
+report_failed() {
+  {
+    echo "Failed: ${TITLE:-$TARGET_LABEL}"
+    printf '%s\n' "$(steps_log | tr ' ' '\n' | sed 's/^/  /')"
+    echo "error: ${ERROR_MESSAGE:-不明}"
+    [ -n "${RETRY_HINT:-}" ] && echo "retry: ${RETRY_HINT}"
+    [ -n "${NOTION_URL:-}" ] && echo "notion: ${NOTION_URL}  # 作成済み．再実行の前に削除する"
+    [ "$TARGET_KIND" = file ] && [ -n "${CURRENT_PATH:-}" ] && echo "file: ${CURRENT_PATH}"
+    echo "log: ${RECORD_DIR}"
+  } >&2
+  return 0
+}
+
+# ---------------------------------------------------------------- 登録だけのやり直し
+
+# AI の出力（result.json）と代表画像は記録ディレクトリに残っている．
+# それを使って Notion への登録と，その後の改名・移動だけを行う．AI は起動しない．
+# 記録は PAPER_LOG_RETENTION_DAYS（既定7日）で消えるので，それまでに行う．
+register_again() {  # <run_id>
+  local page
+
+  RUN_ID="$1"
+  RECORD_DIR="$PAPER_LOG_DIR/$RUN_ID"
+  RESULT_JSON="$RECORD_DIR/result.json"
+  if [ ! -f "$RESULT_JSON" ] || [ ! -f "$RECORD_DIR/target.json" ]; then
+    echo "実行記録が見つからない（解析が終わっていないか，保存期間を過ぎた）: $RECORD_DIR" >&2
+    exit 1
+  fi
+  if [ "$(json_get "$RESULT_JSON" status)" != success ]; then
+    echo "この実行は解析に失敗している．登録ではなく，対象を処理し直せ: $RUN_ID" >&2
+    exit 1
+  fi
+  page="$RECORD_DIR/notion_page.json"
+  if [ -f "$page" ]; then
+    if [ "$(json_get "$page" complete)" = True ]; then
+      echo "既に登録済みである: $(json_get "$page" url)" >&2
+    else
+      echo "作りかけのページが残っている: $(json_get "$page" url)" >&2
+      echo "Notion でそのページを削除し，$page を消してから再実行せよ" >&2
+    fi
+    exit 1
+  fi
+
+  TARGET_KIND="$(json_get "$RECORD_DIR/target.json" kind)"
+  TARGET_LABEL="$(json_get "$RECORD_DIR/target.json" label)"
+  TARGET_PATH="$(json_get "$RECORD_DIR/target.json" path)"
+  CITATION_KEY="$(normalize_key "$(json_get "$RESULT_JSON" citation_key)")"
+  TITLE="$(json_get "$RESULT_JSON" title)"
+  CURRENT_PATH="$TARGET_PATH"
+  GUARD_WARNING=""
+  RUN_MODE=register
+
+  # 元の経路に応じて，登録の後に行うステップを決める
+  STEP_LIST="create"
+  if [ "$TARGET_KIND" = file ]; then
+    if [ -f "$TARGET_PATH" ]; then
+      STEP_LIST="$STEP_LIST rename"
+      [ "$(json_get "$RECORD_DIR/target.json" mode)" = auto ] && STEP_LIST="$STEP_LIST move"
+    else
+      echo "注意: 対象ファイルが元の場所に無いので，改名・移動はしない: $TARGET_PATH" >&2
+      CURRENT_PATH=""
+    fi
+    LOCK_PATH="$(target_lock_path file "$TARGET_PATH")"
+    if ! acquire_lock "$LOCK_PATH" 5; then
+      echo "この資料は処理中である: $TARGET_LABEL" >&2
+      LOCK_PATH=""
+      exit 1
+    fi
+  fi
+
+  RUN_LOG="$RECORD_DIR/run.log"
+  STARTED_AT="$(date '+%s')"
+  log_msg "---- 登録だけをやり直す（ref --register）----"
+  notify_start
+
+  if create_page && [ "$TARGET_KIND" = file ] && [ -n "$CURRENT_PATH" ]; then
+    rename_step 1 && case " $STEP_LIST " in *" move "*) move_step || true ;; esac
+  fi
+
+  log_msg "ステップ: $(steps_log)"
+  notify_result
+  if steps_all_completed; then
+    report_completed
+    exit 0
+  fi
+  report_failed
+  exit 1
+}
+
 # ---------------------------------------------------------------- 引数
 
 TARGET="$1"; shift
+
+REGISTER_RUN_ID=""
+if [ "$TARGET" = "--register" ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "使い方: ref --register <run_id>" >&2
+    exit 2
+  fi
+  REGISTER_RUN_ID="$1"; shift
+fi
 
 AUX_ARGS=()
 if [ "$#" -gt 0 ]; then
@@ -52,6 +167,15 @@ fi
 
 load_env || exit 1
 
+LOCK_PATH=""
+cleanup_on_exit() {
+  release_slot 2>/dev/null || true
+  [ -n "$LOCK_PATH" ] && release_lock "$LOCK_PATH"
+}
+trap cleanup_on_exit EXIT
+
+[ -n "$REGISTER_RUN_ID" ] && register_again "$REGISTER_RUN_ID"
+
 # ---------------------------------------------------------------- 対象の判別
 
 RUN_MODE=manual
@@ -61,7 +185,7 @@ case "$TARGET" in
     TARGET_KIND=url
     TARGET_LABEL="$TARGET"
     # URL は改名する対象が無い
-    STEP_LIST="create finish"
+    STEP_LIST="analyze create"
     CURRENT_PATH=""
     ;;
   *)
@@ -85,7 +209,7 @@ case "$TARGET" in
         exit 2 ;;
     esac
     # 手動は原本をその場で改名するだけで，移動はしない
-    STEP_LIST="create finish rename"
+    STEP_LIST="analyze create rename"
     CURRENT_PATH="$TARGET_PATH"
     ;;
 esac
@@ -177,13 +301,6 @@ fi
 
 # ---------------------------------------------------------------- 経路ごとの2つの関数
 
-LOCK_PATH=""
-cleanup_on_exit() {
-  release_slot 2>/dev/null || true
-  [ -n "$LOCK_PATH" ] && release_lock "$LOCK_PATH"
-}
-trap cleanup_on_exit EXIT
-
 # 対象はコピーだけを AI に見せ，原本には触れさせない．
 # 補助資料は aux/ にまとめ，どれが対象かパスで分かるようにする．
 prepare_target() {
@@ -209,7 +326,7 @@ prepare_target() {
 
 # 原本をその場で改名するだけで，移動はしない（rename_step が共有の本体）．
 # 失敗した場合は原本に触らない．
-place_result() {  # <解析が成功なら1>
+place_result() {  # <解析と登録が成功なら1>
   rename_step "$1" || return 0
   return 0
 }
@@ -226,26 +343,9 @@ fi
 
 cleanup_old_records || true
 
-# 標準出力のラベルは通知と同じ語彙を使う（語を二重に持たない）
 if run_one; then
-  echo "Completed: ${TITLE}"
-  echo "citation_key: ${CITATION_KEY}"
-  echo "notion: ${NOTION_URL}"
-  if [ "$TARGET_KIND" = file ]; then
-    echo "file: ${CURRENT_PATH}"
-  else
-    echo "url: ${TARGET}"
-  fi
-  [ -n "${GUARD_WARNING:-}" ] && echo "warning: ${GUARD_WARNING}"
+  report_completed
   exit 0
 fi
-
-{
-  echo "Failed: ${TITLE:-$TARGET_LABEL}"
-  printf '%s\n' "$(steps_log | tr ' ' '\n' | sed 's/^/  /')"
-  echo "error: ${ERROR_MESSAGE:-不明}"
-  [ -n "${NOTION_URL:-}" ] && echo "notion: ${NOTION_URL}  # 作成済み．再実行の前に削除する"
-  [ "$TARGET_KIND" = file ] && echo "file: ${CURRENT_PATH}"
-  echo "log: ${RECORD_DIR}"
-} >&2
+report_failed
 exit 1

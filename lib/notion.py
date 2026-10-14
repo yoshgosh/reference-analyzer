@@ -202,7 +202,7 @@ def main():
         else:
             print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
             return 2
-    except NotionError as exc:
+    except (NotionError, OSError) as exc:
         print(exc, file=sys.stderr)
         return 1
     except KeyError as exc:

@@ -12,6 +12,7 @@ run_one()
   枠を取る → 実行ディレクトリ作成 → 混入ガード → 開始を通知
   → prepare_target   ← 経路ごと（手動=コピー／自動=mv で取り込む）
   → analyze          ← 共有（プロンプト組立 → エンジン起動 → 出力検証）
+  → create_page      ← 共有（検証済みの出力から Notion ページを作る）
   → place_result     ← 経路ごと（手動=その場で改名／自動=その場で改名 ＋ 直下へ移動）
   → 記録 → 通知 → 枠を解放 → 片付け
 ```
@@ -37,23 +38,22 @@ run_one()
 
 共有
   lib/run_one.sh          1資源の処理の流れ（骨格）
-  lib/analyze.sh          プロンプト組立 → エンジン起動 → 出力検証
+  lib/analyze.sh          プロンプト組立 → エンジン起動 → 出力検証 → Notion への登録
   lib/place.sh            改名と移動（ユーザーのファイルに触るのはここだけ）
   lib/core.sh             環境・ログ・ロック・同時実行の枠・ステップ・混入ガード
 
 部品
   lib/engine_claude.sh    claude -p の呼び出し
+  lib/notion.py           Notion API（タグ一覧の取得，ページの作成）
   lib/notify_slack.sh     Slack 通知
-  lib/validate_result.py  最終出力の検証と正規化
-  lib/find_notion_url.py  transcript から作成済みページのURLを探す
+  lib/validate_result.py  最終出力の検証と正規化，代表画像の保存
   lib/cleanup.sh          保存期間を過ぎた記録の削除
   launchd/install.sh      launchd エージェントの導入・解除・状態確認
 
 指示文・設定
-  prompts/registration.md       書誌項目・要約・Notion登録の指示（何を作るか）
+  prompts/registration.md       書誌項目・要約の指示（何を作るか）
   prompts/headless_addendum.md  無人実行用の追加ルール（混入防止・コマンド制約・JSON出力）
   schema/result.schema.json     AI の最終出力スキーマ
-  config/mcp.json               AI に見せる MCP サーバー（notion のみ）
 ```
 
 **ユーザーのファイルに触る処理は `lib/place.sh` だけに閉じている**（`rename_to_key` と
@@ -84,21 +84,22 @@ run_one()
 | キー | 表示 | 判定根拠 | 担い手 |
 |---|---|---|---|
 | `fetch` | `fetch file` | 自動のみ．`inbox` → `in_progress` へ `mv` | シェル |
-| `create` | `create page` | `notion_url` が非空 | AI |
-| `finish` | `finish page` | `status` == `success` | AI |
+| `analyze` | `analyze source` | 出力が検証に通り，`status` == `success` | AI |
+| `create` | `create page` | `lib/notion.py register` が成功 | シェル |
 | `rename` | `rename file` | `rename_to_key` | シェル |
 | `move` | `move file` | 自動のみ．`in_progress` → 直下へ `mv` | シェル |
 
-AIの出力2項目が，そのままAIの担当する2ステップに対応する．内部のキーは表示名の動詞
-そのものであり，語を二重に持たない．
+AI が担うのは `analyze` だけである．内部のキーは表示名の動詞そのものであり，語を二重に持たない．
+改名・移動は `create` まで成功したときだけ行う．
 
 経路に存在するステップだけを出す．宣言は経路側にあり（`STEP_LIST`），**番号は並び順**である．
 
 | 経路 | `STEP_LIST` |
 |---|---|
-| 手動・PDF | `create finish rename` |
-| 手動・URL | `create finish` |
-| 自動 | `fetch create finish rename move` |
+| 手動・PDF | `analyze create rename` |
+| 手動・URL | `analyze create` |
+| 自動 | `fetch analyze create rename move` |
+| 登録のやり直し | `create` ＋ 元の経路の `rename`（`move`） |
 
 状態は3つで，**作業単位のライフサイクルを過去分詞で言う系統**に揃えている（見出しの
 `Started` / `Completed` / `Failed` と同じ系統）．既定値は `skipped` である．
@@ -134,8 +135,8 @@ Incoming Webhook は使えない．応答が `ok` という文字列だけで，
 ```
 🚨 Failed: ~/Research/Papers/in_progress/paper.pdf
 ① fetch file: completed
-② create page: skipped
-③ finish page: skipped
+② analyze source: skipped
+③ create page: skipped
 ④ rename file: skipped
 ⑤ move file: skipped
 error: この資料は既に処理中である
@@ -158,16 +159,41 @@ error: 利用上限またはレート制限に達した（429） — You've hit 
 判定は `lib/engine_claude.sh` の `engine_error_summary` にあり，エンジン固有なので
 engine 層に置いている．
 
-### 構造化出力が得られなかった場合
+## Notion への登録
 
-構造化出力は AI が最後にまとめて返すため，利用上限などで途中切断されると得られない．
-**しかしその時点でページが作成済みであることはありうる．**
+**AI は Notion に触れない．** AI は書誌情報・要約・代表画像を構造化出力で返すだけで，
+登録は `lib/notion.py` がスクリプトから行う．
 
-存在するページを「未作成・そのまま再実行可」と通知すると，再実行で重複登録になる．
-そのため検証に失敗した場合は，`transcript.jsonl` に残る `notion-create-pages` の結果から
-URLを拾い，`create` ステップを正しく判定する（`lib/find_notion_url.py`）．400 などで
-拒否された呼び出しは無視する（ページは作られていないため）．AI 側に手順を足していないので，
-AI が指示に従うかどうかに依存しない．
+以前は AI が Notion MCP で登録していた．Notion MCP はツール定義だけで約 85k トークンあり
+（使うのは数個だが全部が読み込まれる），それが毎ターン読み直されていた．1件あたりの入力は
+約 2M トークンで，その大半がこれだった．登録をスクリプトへ移すと，同じ論文で 2.03M → 0.28M，
+ターン数 22 → 14 になった（2026-10-14 実測）．プロパティ名・型の誤りによるやり直し
+（5件中2件で起きていた）も起きなくなった．
+
+### 手順と順序
+
+| 順 | 処理 | 理由 |
+|---|---|---|
+| 1 | 画像をアップロードする | ページより先に行う．失敗してもページが残らない |
+| 2 | 新しいタグを色付きで追加する | 未登録のタグ値をページ作成で送ると選択肢は自動で増えるが，色が無作為になる |
+| 3 | ページを作る（本文は `markdown`） | 入れ子の箇条書き・数式もそのまま通る |
+| 4 | 画像ブロックを先頭に置く（`position: start`） | 本文の Markdown 内で `file-upload://` を参照すると空の外部画像になる |
+
+4 で失敗したら作ったページをゴミ箱へ移す．**失敗は常に「ページ未作成」になる**ので，
+再実行の前にページを消す手間が無い．ゴミ箱へ移すことにも失敗した場合だけ URL を
+`notion_page.json` に `complete: false` で残し，通知にも出す．
+
+タグの選択肢の更新は全置換である．既存の選択肢を id ごと全部送ってから新しいものを足す．
+
+既存タグはプロンプトを組み立てる前に取得し，指示文に埋め込む．このときプロパティの名前と型も
+照合するので，トークン切れや接続忘れは **AI を起動する前に**失敗する（利用量を消費しない）．
+
+### 登録だけのやり直し
+
+`validate_result.py` は代表画像を記録ディレクトリへ `image.<拡張子>` としてコピーする．
+作業ディレクトリは成功時に消えるが記録は残るので，`result.json` と画像だけで登録を再現できる．
+`ref --register <run_id>` がこれを使い，`create` と，元の経路の改名・移動だけを行う．元の経路と
+対象の場所は `target.json` に記録してある．`notion_page.json` があれば拒否する（重複登録になる）．
 
 ## 混入防止
 
@@ -178,7 +204,7 @@ AI が指示に従うかどうかに依存しない．
 | 施策 | 何を塞ぐか |
 |---|---|
 | `--restricted` | `Read`/`Write`/`Glob`/`Grep` を作業ディレクトリに限定する．user/project/local の設定ファイルも無視する |
-| `--strict-mcp-config` ＋ `--mcp-config` | notion 以外の MCP を遮断する（他のコネクタ経由の流入） |
+| `--strict-mcp-config`（`--mcp-config` なし） | MCP を1つも読み込まない（コネクタ経由の流入） |
 | `--allowedTools` | 許可した5コマンド以外の Bash を拒否する |
 | `--permission-mode dontAsk` | 許可リスト外は確認待ちにならず拒否される（無人実行で止まらない） |
 
@@ -217,7 +243,7 @@ CLI の既定に依存し，更新で静かに変わる．
 
 ### 指示文だけの層
 
-- 対象は1文献のみ．Notion ページは1つだけ作る
+- 対象は1文献のみ
 - 他の文献・過去の会話・記憶を使わない
 - 補助資料から**書誌情報を取らない**（要約と代表画像のためにのみ使う）
 - Web検索はタイトル・著者・DOI の一致を確認してから使う
@@ -229,9 +255,9 @@ CLI の既定に依存し，更新で静かに変わる．
 ### 残っている穴
 
 **`curl` の `file://`．** `--restricted` が制限するのはファイルツールだけで，Bash 経由は
-対象外である．`curl file:///path` で作業ディレクトリ外を読める．Notion へのファイル
-アップロードに必須（`WebFetch` では POST できない）なため残している．アップロード専用の
-ラッパーに置き換えれば塞げる．
+対象外である．`curl file:///path` で作業ディレクトリ外を読める．Web から代表画像を取る
+（arXiv HTML版等．URL が対象のときは唯一の手段）ために残している．AI は Notion に書けず，
+出力は検証されるので，読めても外へ出る経路は狭い．
 
 ## 同時実行の制御
 
@@ -323,32 +349,39 @@ launchd から起動したスクリプトは `~/Documents`・`~/Desktop`・`~/Do
 
 | ファイル | 役割 |
 |---|---|
-| `prompts/registration.md` | **何を作るか**．書誌項目の定義，Citation Key の規則，要約の必須トピック，Notion のスキーマ |
+| `prompts/registration.md` | **何を作るか**．書誌項目の定義，Citation Key の規則，タグ，要約の必須トピック |
 | `prompts/headless_addendum.md` | **無人実行での追加・変更**．対象の限定，補助資料，Web検索の扱い，コマンドの制約，代表画像の取得手順，最終出力 |
 
 **同じ指示を両方に書かない．** 一方から他方を参照する場合は節番号で指す（例：「§6 に定める」）．
 
-`{{NOTION_DATA_SOURCE_ID}}` と `{{ALLOWED_COMMANDS}}` は `build_prompt` が置換する．
+`{{EXISTING_TAGS}}`（Notion から取得した既存タグ）と `{{ALLOWED_COMMANDS}}` は `build_prompt` が置換する．
 
 ### 最終出力
 
 ```
-status        "success" | "failed"   → ステップ finish page の判定
-citation_key  スクリプトが改名に使う
-title         通知の見出し
-notion_url    ページを作成したら failed でも必ず入れる → ステップ create page の判定
+status        "success" | "failed"   → ステップ analyze の判定
 error         失敗した段階と理由．成功時は空 → 通知の error: 行
+citation_key  改名と Notion の Citation Key に使う
+title         通知の見出し，Notion の Title
+doi summary author year publication citation rating
+              Notion のプロパティにそのまま入る
+tags          選んだタグ（新しいものも含む）
+new_tags      新しく作るタグと色．tags の部分集合
+body          要約本文（Markdown）．画像は含めない
+image_file    代表画像の作業ディレクトリからの相対パス．無ければ空
+image_caption 代表画像のキャプション
 ```
 
 通知の `error:` という項目名はここから来ている．そのため**ステップの状態名には `error` を
 使わない**（同じ語が2つの意味で並ぶ）．
 
-Rating は Notion のプロパティには入るが，スクリプトへは返さない．スクリプト側で必要とする
-場面がないためである．
+型と内容は `validate_result.py` が確かめる．`year` は西暦4桁，`new_tags` は `tags` の部分集合，
+`image_file` は作業ディレクトリの中にある実際の画像（中身の先頭バイトで判定する）でなければ
+ならない．`status` が `failed` のときは登録しないので内容は確かめない．
 
-`success` になるのは，Notion 登録が完了し，**かつ代表画像が入っている**場合のみである．
-図表が存在するのに入れられなければ `failed` とする（代表画像は要約の一部であり，入っていない
-登録を完了とはみなさない）．対象に図表がそもそも無ければ画像なしで `success` とする．
+`success` になるのは，書誌情報と要約ができ，**かつ代表画像を取得できた**場合のみである．
+図表が存在するのに取得できなければ `failed` とし，ページは作らない（代表画像は要約の一部であり，
+入っていない登録を完了とはみなさない）．対象に図表がそもそも無ければ画像なしで `success` とする．
 
 `citation_key` は正規化してから使う．NFKD 分解して ASCII だけを残すので `Müller` は
 `Muller` になる．正規化後に空・3文字未満・英字を含まない場合は妥当でないとして失敗にする．
@@ -389,6 +422,9 @@ HTMLが無い場合はそのうえでPDF経路を全部やることになる．*
   engine_raw.json   エンジンの生出力
   engine.stderr     エンジンの標準エラー
   result.json       検証・正規化した最終出力
+  image.<拡張子>    代表画像（登録だけのやり直しに使う）
+  target.json       対象の種別・経路・場所（同）
+  notion_page.json  作成したページの id と URL
   transcript.jsonl  AIの全操作（ツール呼び出しと結果）
   slack_post.json   Slack API の応答
   slack_update.json 同
@@ -404,7 +440,7 @@ HTMLが無い場合はそのうえでPDF経路を全部やることになる．*
 `PAPER_ENGINE=codex` は受け付けるが `lib/engine_codex.sh` が無く，明示的なエラーで止まる．
 `codex` コマンド自体も未インストールである．
 
-`lib/engine_codex.sh` に実装すべき関数は次の6つで，共有側に手を入れる必要はない．
+`lib/engine_codex.sh` に実装すべき関数は次の5つで，共有側に手を入れる必要はない．
 
 ```
 run_engine              エンジンを起動して生出力を書く
@@ -412,7 +448,6 @@ engine_error_summary    エンジン自身の失敗を1行にまとめる
 engine_session_id       生出力から session_id を取る
 engine_transcript_path  session_id から transcript のパスを得る
 engine_save_transcript  transcript を記録ディレクトリへ保存する
-engine_find_notion_url  transcript から作成済みページのURLを探す
 ```
 
 起動は次の形になる見込みである．
@@ -438,22 +473,21 @@ codex exec --skip-git-repo-check \
 `--ephemeral` は付けない（実行記録を残すため）．出力の形が claude と違うので，engine 層で
 同じ形に正規化する（`lib/validate_result.py` は触らない）．
 
-**判断が必要な問題が3つある．**
+**判断が必要な問題が2つある．**
 
 1. **混入防止の水準が下がる．** `--restricted` はファイルツールの**読み取り**も作業ディレクトリに
    限定するが，codex の `workspace-write` が制御するのは書き込みと承認で，読み取りは限定され
    ない．他の論文PDFを読める状態になる．
 2. **コマンドの許可リストが無い．** `ALLOWED_COMMANDS` を `--allowedTools` で強制している防御が
    消える．`python3` を外した判断（作業ディレクトリ外を読めるため）が効かなくなる．さらに
-   Notion への画像アップロードに `curl` が必要なので，サンドボックスにネットワーク許可を
+   Web から代表画像を取るのに `curl` が必要なので，サンドボックスにネットワーク許可を
    与えることになる．
-3. **MCP を notion だけに限定する手段が無い．** `--strict-mcp-config` に相当するオプションが
-   codex に無く，`~/.codex/config.toml` に書かれた他の MCP サーバーも AI から見える．
-   `CODEX_HOME` を専用ディレクトリにすれば分離できるが，`auth.json` もその配下にあるため，
-   その中で `codex login` と `codex mcp login` を対話で行う必要がある．
 
-**未検証の点が2つある．** `sandbox_workspace_write.network_access` のキー名，および
-`approval_policy="never"` 下で Notion MCP 呼び出しが拒否されないか．
+AI が Notion MCP を使わなくなったので，以前あった「MCP を notion だけに限定する手段が無い」
+問題は，`~/.codex/config.toml` の MCP を見せない方法さえあれば解消する（`CODEX_HOME` を
+専用ディレクトリにして `codex login` だけを行う）．
+
+**未検証の点がある．** `sandbox_workspace_write.network_access` のキー名．
 
 ### `curl` の `file://` を塞ぐ
 
@@ -463,7 +497,6 @@ codex exec --skip-git-repo-check \
 
 - 重複検知
 - 対話画面から起動するスキル
-- Notion への書き込みをスクリプトで行う方式（**Notion 登録は AI が持つ**）
 - Notion データベースへのプロパティ追加
 - OS 通知（Slack のみ）
 - Claude Code・Codex 以外のエンジン

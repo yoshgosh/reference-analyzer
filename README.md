@@ -5,9 +5,9 @@
 
 ```
 inbox に PDF を置く ──┐
-                       ├──▶ AI が読解・要約・Notion登録 ──┬──▶ Notion に1ページ
-ref <PDF|URL> ────────┘                                   ├──▶ PDF を <CitationKey>.pdf に改名
-                                                           └──▶ Slack に通知
+                       ├──▶ AI が読解・要約 ──▶ スクリプトが登録 ──┬──▶ Notion に1ページ
+ref <PDF|URL> ────────┘                                            ├──▶ PDF を <CitationKey>.pdf に改名
+                                                                    └──▶ Slack に通知
 ```
 
 **1コマンド = 1文献 = AIプロセス1回 = Notionページ1つ**である．
@@ -22,7 +22,7 @@ ref <PDF|URL> ────────┘                                   ├�
 | `claude` コマンド | AI の実行 | `claude --version` |
 | poppler | PDFからの文字・画像抽出 | `brew install poppler` |
 | Notion のデータベース | 登録先 | 下記のプロパティが必要 |
-| Notion MCP の認証 | Notion への登録 | `claude mcp list` で `notion: ✔ Connected` |
+| Notion の内部コネクション | Notion への登録 | 下記「Notion 側の準備」 |
 | Slack アプリ | 通知 | Bot Token Scopes に `chat:write` |
 
 `launchd/install.sh status` で一括して確認できる．
@@ -45,8 +45,20 @@ ref <PDF|URL> ────────┘                                   ├�
 | `Rating` | セレクト | `★` / `★★` / `★★★` |
 | `Favorite` | セレクト | `❤︎` / `❤︎❤︎` / `❤︎❤︎❤︎`（AI は設定しない） |
 
-AI は `Tag` に新しい選択肢を追加する（既存の選択肢は保持する）．`Rating` と `Favorite` の
-選択肢は追加しない．要約の本文はページ本文に書き，先頭に代表画像を1枚挿入する．
+`Tag` には新しい選択肢が追加されることがある（既存の選択肢は保持する）．`Rating` と
+`Favorite` の選択肢は追加しない．要約の本文はページ本文に書き，先頭に代表画像を1枚挿入する．
+
+登録はスクリプトが Notion の API で行う．そのための内部コネクションを作る．
+
+1. https://app.notion.com/developers/connections の **Internal connections** で
+   **Create a new connection** を押し，登録先のワークスペースを選ぶ（ワークスペースのオーナー権限が要る）
+2. **Configuration** タブで権限を Read content・Update content・Insert content にし，
+   ユーザー情報は不要とする．同じタブのトークンを `.env` の `NOTION_TOKEN` に書く
+3. 登録先のデータベースの **•••** → **Connections** → **+ Add connection** で，作った
+   コネクションを接続する（接続しないと API がデータベースを見つけられない）
+
+`NOTION_DATA_SOURCE_ID` はデータベースIDではなく**データソースID**である．データベースの
+設定メニューからコピーする．正しく設定できたかは `launchd/install.sh status` の `Notion` の行で確かめられる．
 
 ## 導入
 
@@ -56,25 +68,16 @@ AI は `Tag` に新しい選択肢を追加する（既存の選択肢は保持�
 cp .env.example .env
 ```
 
-`NOTION_DATA_SOURCE_ID`・`SLACK_BOT_TOKEN`・`SLACK_CHANNEL` を記入する．他は既定値で動く．
+`NOTION_TOKEN`・`NOTION_DATA_SOURCE_ID`・`SLACK_BOT_TOKEN`・`SLACK_CHANNEL` を記入する．
+他は既定値で動く．
 
-**2. Notion MCP の認証（初回のみ・対話が必要）**
-
-```sh
-claude mcp add --transport http --scope user notion https://mcp.notion.com/mcp
-claude          # 対話モードで /mcp を実行して OAuth 認証する
-```
-
-非対話実行（`claude -p`）からは認証できないため，ここだけ手で行う．認証後，同じ対話モードで
-Notion MCP にデータベースを検索させると `NOTION_DATA_SOURCE_ID` に入れる値が得られる．
-
-**3. Slack アプリ**
+**2. Slack アプリ**
 
 Bot Token Scopes に `chat:write` を付与し，**投稿先チャンネルにアプリを招待する**．
 `SLACK_CHANNEL` はチャンネルIDを推奨する（名前だと非公開チャンネルで使えず，
 `channels:read` が追加で必要になり，チャンネル名を変えると壊れる）．
 
-**4. 自動起動の登録**
+**3. 自動起動の登録**
 
 ```sh
 launchd/install.sh install     # 解除は uninstall，確認は status
@@ -178,11 +181,12 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 ```
 🚨 Failed: Tidier Drawings of Trees
 ① fetch file: completed
-② create page: completed
-③ finish page: failed
+② analyze source: completed
+③ create page: failed
 ④ rename file: skipped
 ⑤ move file: skipped
-error: 図表は存在するが，代表画像を本文先頭に挿入できなかった
+error: Notion への登録に失敗した: POST /pages が 502 で拒否された
+retry: `ref --register 20261013-171025-53515`
 citation_key: `Reingold1981TidierDrawings`
 file: `~/Research/Papers/in_progress/tidier-drawings.pdf`
 run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 63sec
@@ -201,8 +205,8 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 | ステップ | 内容 |
 |---|---|
 | `fetch file` | inbox から in_progress へ移す（自動のみ） |
-| `create page` | Notion ページを作る |
-| `finish page` | ページを完成させる（**代表画像の挿入を含む**） |
+| `analyze source` | AI が資料を読み，書誌情報・要約・代表画像を作る |
+| `create page` | スクリプトが Notion ページを作る（**代表画像の挿入を含む**） |
 | `rename file` | Citation Key に改名する |
 | `move file` | 直下へ移す（自動のみ） |
 
@@ -220,6 +224,8 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 `warning:` の行は見出しを変えない．作業ディレクトリの祖先に `CLAUDE.md` があるときに出る
 （無関係な指示がAIに読み込まれるおそれがある）．
 
+`retry:` の行は，解析は済んだが Notion への登録だけが失敗したときに出る（「失敗したとき」を参照）．
+
 ## 失敗したとき
 
 **`in_progress/` に残っているものが，完了していないものである．** 元の名前のままなので，
@@ -229,10 +235,19 @@ inbox へ戻せば再実行できる．
 mv ~/Research/Papers/in_progress/paper.pdf ~/Research/Papers/inbox/
 ```
 
-**`create page: completed` のときは，先に Notion のページを削除する．** ページは既に
-存在するので，消さずに再実行すると同じ論文で2件目ができる．URLは通知の見出しのリンクにある．
-
 手動で失敗した場合は原本に触っていないので，同じコマンドを打ち直すだけでよい．
+
+### 登録だけが失敗したとき
+
+**`retry:` の行が出ていれば，AI を再実行せずに登録だけをやり直せる．** 解析の結果と代表画像は
+実行記録に残っているので，利用量を消費しない．
+
+```sh
+bin/ref --register 20261013-171025-53515
+```
+
+成功すると，元の実行と同じく改名し，自動の場合は直下へ移す．実行記録は既定7日で消えるので，
+それまでに行う．登録に失敗したときは作りかけのページをゴミ箱へ移すので，ページの削除は要らない．
 
 ### 原因別
 
@@ -240,9 +255,10 @@ mv ~/Research/Papers/in_progress/paper.pdf ~/Research/Papers/inbox/
 |---|---|
 | `利用上限またはレート制限に達した（429）` | 表示されたリセット時刻を過ぎてから再実行する |
 | `有効なPDFではない` / `内容が空だった` | ファイルを正しいものに差し替える |
-| `Invalid multi_select value for property "Tag"` | そのまま再実行する |
 | `citation_key が妥当でない` | 繰り返すなら書誌情報が取れていない．`--with` で公式サイトを添える |
-| `図表は存在するが…挿入できなかった` | Notion のページを消してから再実行する |
+| `図表は存在するが…取得できなかった` | そのまま再実行する．繰り返すなら `--with` で公式サイトを添える |
+| `Notion への登録に失敗した` | `retry:` の行のコマンドで登録だけをやり直す |
+| `Notion のデータベースを確認できなかった` | 下の「困ったとき」の `Notion` の行を見る（AI は起動していない） |
 
 ### 困ったとき
 
@@ -252,15 +268,16 @@ ls ~/Research/Papers/.logs/<run_id>/              # 1実行の記録
 ```
 
 記録には `prompt.md`（AIに渡した指示文の全文）・`transcript.jsonl`（AIの全操作）・
-`result.json`（AIの最終出力）が入っている．
+`result.json`（AIの最終出力）・`image.*`（代表画像）・`notion_page.json`（作成したページ）が入っている．
 
 | 症状 | 原因 |
 |---|---|
 | 自動処理が走らない | `launchd/install.sh status` で登録と PATH を確認する |
 | ログに `対象なし（inbox=… 全 N ファイル）`．**N が 0 でない** | TCC．`PAPER_ROOT` が `~/Documents` 等の配下にある |
 | 通知が来ない | `SLACK_BOT_TOKEN`・`SLACK_CHANNEL`．アプリをチャンネルに招待したか |
-| `notion: ✗` | `claude` の対話モードで `/mcp` から再認証する |
-| `Invalid multi_select value` が続く | 登録先のデータベースに `Tag` がマルチセレクトで存在するか |
+| `launchd/install.sh status` の `Notion` が `401` | `NOTION_TOKEN` が誤っているか，再発行された |
+| 同 `404` | データベースにコネクションを接続していないか，`NOTION_DATA_SOURCE_ID` が誤っている |
+| 同 `プロパティが想定と違う` | 「Notion 側の準備」の表と名前・形式を揃える |
 
 ## 設定
 
@@ -268,6 +285,7 @@ ls ~/Research/Papers/.logs/<run_id>/              # 1実行の記録
 
 | 変数 | 既定 | 内容 |
 |---|---|---|
+| `NOTION_TOKEN` | （必須） | Notion の内部コネクションのトークン |
 | `NOTION_DATA_SOURCE_ID` | （必須） | 登録先のデータソースID |
 | `SLACK_BOT_TOKEN` | （必須） | Bot トークン |
 | `SLACK_CHANNEL` | （必須） | チャンネルID |

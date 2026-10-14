@@ -40,7 +40,7 @@ RUN_MODE=auto
 TARGET_KIND=file
 TARGET_LABEL="$ORIG_NAME"
 AUX_DESC=""
-STEP_LIST="fetch create finish rename move"
+STEP_LIST="fetch analyze create rename move"
 # 開始の通知より前に確定している必要がある（取り込みはそのあとで走る）
 CURRENT_PATH="$INBOX_PATH"
 
@@ -86,17 +86,9 @@ prepare_target() {
 
 # ②の改名（手動と共有）に続けて，③ PAPER_ROOT へ出す．
 # 改名できなかった場合も in_progress に残すだけで，どこへも動かさない．
-place_result() {  # <解析が成功なら1>
-  local dest
+place_result() {  # <解析と登録が成功なら1>
   rename_step "$1" || return 0
-
-  if dest="$(move_into "$CURRENT_PATH" "$PAPER_ROOT")"; then
-    step_completed move
-    CURRENT_PATH="$dest"
-    return 0
-  fi
-  step_failed move
-  ERROR_MESSAGE="${PAPER_ROOT} への移動に失敗した"
+  move_step || true
   return 0
 }
 

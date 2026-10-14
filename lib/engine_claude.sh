@@ -8,9 +8,11 @@
 #                           これにより作業ディレクトリ外の Read が拒否される．
 #                           プロセスを分けただけでは防げない経路を塞ぐための要である．
 #                           ただし Bash と WebFetch は --tools で明示しないと消える．
-#   --strict-mcp-config     --mcp-config 以外の MCP 設定（claude.ai コネクタ等）を遮断する．
+#   --strict-mcp-config     --mcp-config を渡さないので，MCP を1つも読み込まない．
 #                           Obsidian や Google Drive 経由で無関係な情報が入る経路を塞ぐ．
-#   --mcp-config            notion サーバーを明示する．OAuth 認証は引き継がれる．
+#                           Notion への登録はスクリプトが行う（lib/notion.py）．
+#                           Notion MCP はツール定義だけで約 85k トークンあり，
+#                           それが毎ターン読み直されていた（2026-10-14 実測）．
 #   --permission-mode dontAsk  許可リスト外の操作は確認待ちにならず拒否される．
 #   --json-schema           構造化出力．結果は engine_raw.json の structured_output に入る．
 #   --model / --effort      明示的に固定する．--restricted が設定ファイルを無視するため，
@@ -20,7 +22,7 @@
 #
 # python3 は意図的に許可しない．--restricted が制限するのはファイルツールだけであり，
 # Bash 経由の python3 は作業ディレクトリ外を自由に読める（実測で確認済み）．
-# 残る迂回路は curl の file:// であり，Notion へのアップロードに必須のため残している．
+# 残る迂回路は curl の file:// であり，Web から代表画像を取るために残している．
 
 # ALLOWED_COMMANDS（lib/analyze.sh の単一の定義元）から --allowedTools を組み立てる
 claude_allowed_tools() {
@@ -29,7 +31,6 @@ claude_allowed_tools() {
   for cmd in $ALLOWED_COMMANDS; do
     printf 'Bash(%s *)\n' "$cmd"
   done
-  printf '%s\n' mcp__notion
 }
 
 run_engine() {  # <作業ディレクトリ> <プロンプトのパス> <生出力のパス> <標準エラーのパス>
@@ -59,7 +60,6 @@ EOF
       --permission-mode dontAsk \
       --restricted \
       --strict-mcp-config \
-      --mcp-config "$REPO_ROOT/config/mcp.json" \
       --tools "Read,Write,Bash,WebSearch,WebFetch,Glob,Grep" \
       --allowedTools "${tools[@]}" \
       </dev/null >"$raw" 2>"$errout"
@@ -118,16 +118,4 @@ engine_save_transcript() {  # <作業ディレクトリ> <記録ディレクト�
   [ -z "$src" ] && return 1
   cp "$src" "$record_dir/transcript.jsonl" || return 1
   return 0
-}
-
-# 作成された Notion ページのURLを transcript から探す．
-#
-# 構造化出力は最後にまとめて生まれるため，利用上限（429）などで途中切断されると
-# 得られない．しかしその時点でページが作成済みであることはありうる．
-# 存在するページを「未作成」と誤って通知すると，再実行で重複登録になる．
-engine_find_notion_url() {  # <session_id>
-  local src
-  src="$(engine_transcript_path "$1")"
-  [ -z "$src" ] && return 0
-  py "$REPO_ROOT/lib/find_notion_url.py" "$src" 2>/dev/null || true
 }

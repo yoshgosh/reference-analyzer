@@ -7,7 +7,7 @@
 #
 # 対象を改名する処理（rename_step）は両経路で共有する．
 #   手動 … 原本をその場で改名して終わり（移動しない）
-#   自動 … in_progress のファイルを改名し，続けて move_into で PAPER_ROOT へ出す
+#   自動 … in_progress のファイルを改名し，続けて move_step で PAPER_ROOT へ出す
 #
 # ユーザーのファイルは作業ディレクトリに入らない．入るのはコピーだけである．
 
@@ -83,11 +83,11 @@ move_into() {  # <パス> <移動先ディレクトリ> [基本名を差し替�
 #
 # 返り値 0 … 改名した（URL のときも 0．改名する対象が無い）
 #        1 … 改名していない
-rename_step() {  # <解析が成功なら1>
+rename_step() {  # <解析と登録が成功なら1>
   local ok="$1" dest
 
   [ "$TARGET_KIND" = url ] && return 0
-  # 解析が失敗したときは原本に触らない．ステップは skipped のままにする．
+  # 解析か登録が失敗したときは原本に触らない．ステップは skipped のままにする．
   [ "$ok" != "1" ] && return 1
 
   if dest="$(rename_to_key "$TARGET_PATH" "$CITATION_KEY")"; then
@@ -97,5 +97,19 @@ rename_step() {  # <解析が成功なら1>
   fi
   step_failed rename
   ERROR_MESSAGE="改名に失敗した（元: ${TARGET_PATH}）"
+  return 1
+}
+
+# 自動の最後の段：改名済みの対象（CURRENT_PATH）を PAPER_ROOT へ出す．
+# 自動の place_result と，自動の実行を登録だけやり直す ref --register が共有する．
+move_step() {
+  local dest
+  if dest="$(move_into "$CURRENT_PATH" "$PAPER_ROOT")"; then
+    step_completed move
+    CURRENT_PATH="$dest"
+    return 0
+  fi
+  step_failed move
+  ERROR_MESSAGE="${PAPER_ROOT} への移動に失敗した"
   return 1
 }

@@ -2,11 +2,39 @@
   "type": "object",
   "properties": {
     "status": { "type": "string", "enum": ["success", "failed"] },
+    "error": { "type": "string" },
     "citation_key": { "type": "string" },
     "title": { "type": "string" },
-    "notion_url": { "type": "string" },
-    "error": { "type": "string" }
+    "doi": { "type": "string" },
+    "summary": { "type": "string" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "new_tags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "color": {
+            "type": "string",
+            "enum": ["default", "gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red"]
+          }
+        },
+        "required": ["name", "color"],
+        "additionalProperties": false
+      }
+    },
+    "author": { "type": "string" },
+    "year": { "type": "string" },
+    "publication": { "type": "string" },
+    "citation": { "type": "string" },
+    "rating": { "type": "string", "enum": ["★", "★★", "★★★", ""] },
+    "body": { "type": "string" },
+    "image_file": { "type": "string" },
+    "image_caption": { "type": "string" }
   },
-  "required": ["status", "citation_key", "title", "notion_url", "error"],
+  "required": [
+    "status", "error", "citation_key", "title", "doi", "summary", "tags", "new_tags",
+    "author", "year", "publication", "citation", "rating", "body", "image_file", "image_caption"
+  ],
   "additionalProperties": false
 }

@@ -42,6 +42,10 @@ load_env() {
   # Slack は Web API のみを使う（Incoming Webhook は ts を返さず書き換えができない）
   SLACK_API="${SLACK_API:-https://slack.com/api}"
 
+  if [ -z "${NOTION_TOKEN:-}" ]; then
+    echo "reference-analyzer: NOTION_TOKEN が未設定である（.env を確認せよ）" >&2
+    return 1
+  fi
   if [ -z "${NOTION_DATA_SOURCE_ID:-}" ]; then
     echo "reference-analyzer: NOTION_DATA_SOURCE_ID が未設定である（.env を確認せよ）" >&2
     return 1
@@ -218,8 +222,8 @@ release_slot() {
 # 経路に存在しないものは出さない（STEP_LIST で宣言する）．通知の番号は並び順である．
 #
 #   fetch   fetch file     自動のみ．inbox から in_progress へ移した（シェル）
-#   create  create page    Notion ページを作成した（AI：notion_url が非空）
-#   finish  finish page    ページを完成させた（AI：status == success）
+#   analyze analyze source 資料を解析した（AI：status == success かつ出力が検証に通った）
+#   create  create page    Notion ページを作成した（シェル：lib/notion.py）
 #   rename  rename file    Citation Key へ改名した（シェル：rename_to_key）
 #   move    move file      自動のみ．PAPER_ROOT へ移した（シェル：move_into）
 #
@@ -237,9 +241,9 @@ release_slot() {
 # 状態名に error を使わない．理由の項目名が error であり（スキーマの項目名），
 # 同じメッセージの中で error が2つの意味で並んでしまう．
 #
-# STEP_LIST は経路が宣言する（手動=ファイル: create finish rename ／
-# 手動=URL: create finish ／ 自動: fetch create finish rename move）．
-STEP_LIST="${STEP_LIST:-fetch create finish rename move}"
+# STEP_LIST は経路が宣言する（手動=ファイル: analyze create rename ／
+# 手動=URL: analyze create ／ 自動: fetch analyze create rename move）．
+STEP_LIST="${STEP_LIST:-fetch analyze create rename move}"
 
 step_completed() { eval "STEPSTATE_$1=completed"; }
 step_failed()    { eval "STEPSTATE_$1=failed"; }

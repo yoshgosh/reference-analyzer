@@ -8,7 +8,7 @@
 #                    成功したら自動は step_completed fetch を記録する．
 #                    失敗したら ERROR_MESSAGE を設定して 1 を返す．
 #   place_result     結果に応じてファイルを配置する（手動=原本を改名／自動=改名して移動）
-#                    引数は解析が成功なら 1．ステップを step_completed / step_failed で記録し，
+#                    引数は解析と登録が成功なら 1．ステップを step_completed / step_failed で記録し，
 #                    ファイルが動いたら CURRENT_PATH を更新する．返り値は見ない．
 #
 # 全体の成否は「全ステップが completed か」だけで決まる（lib/core.sh の steps_all_completed）．
@@ -28,7 +28,7 @@ prepare_target() { return 0; }
 place_result()   { return 0; }
 
 run_one() {
-  local analyzed=0
+  local done=0
 
   # 枠は「1資源を処理する許可」である．先に取るので，待っているプロセスは
   # 対象ファイルを掴まない．これが唯一の同時実行の制御点である．
@@ -47,8 +47,9 @@ run_one() {
     return 1
   fi
 
-  analyze "$TARGET_DESC" "${AUX_DESC:-}" && analyzed=1
-  place_result "$analyzed"
+  # 改名・移動はページを作れたときだけ行う．失敗したら対象に触らない
+  analyze "$TARGET_DESC" "${AUX_DESC:-}" && create_page && done=1
+  place_result "$done"
 
   save_records
   log_msg "ステップ: $(steps_log)"

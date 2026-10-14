@@ -177,8 +177,8 @@ step_no() {  # <1 から始まる序数>
 step_label() {  # <ステップ名>
   case "$1" in
     fetch)  printf 'fetch file' ;;
-    create) printf 'create page' ;;
-    finish) printf 'finish page' ;;
+    analyze) printf 'analyze source' ;;
+    create)  printf 'create page' ;;
     rename) printf 'rename file' ;;
     move)   printf 'move file' ;;
     *)        printf '%s' "$1" ;;
@@ -212,6 +212,8 @@ notify_result() {
 $(step_lines)"
     [ -n "${ERROR_MESSAGE:-}" ] && body="${body}
 error: $(tilde "$ERROR_MESSAGE")"
+    [ -n "${RETRY_HINT:-}" ] && body="${body}
+retry: \`${RETRY_HINT}\`"
   fi
 
   [ -n "${GUARD_WARNING:-}" ] && body="${body}

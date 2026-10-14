@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
-# 解析：プロンプト組立 → エンジン起動 → 出力検証
+# 解析と登録：プロンプト組立 → エンジン起動 → 出力検証 → Notion への登録
 #
 # このファイルはファイルの改名・移動を行わない．AI も行わない（指示文で禁止している）．
 # AI は citation_key を返すだけで，改名は lib/place.sh が行う．
 #
+# AI は Notion に触れない．AI が返した内容を，create_page がスクリプトから登録する．
+#
 # 入出力:
 #   入力  プロンプト（argv）と作業ディレクトリ（AI のカレント．対象と aux/ だけが入る）
-#   出力  RESULT_* のグローバル（構造化出力を検証・正規化したもの）
-#   副作用 Notion ページの作成，作業ディレクトリ内の一時ファイル
+#   出力  RESULT_* のグローバル（構造化出力を検証・正規化したもの），NOTION_URL
+#   副作用 Notion ページの作成，作業ディレクトリ内の一時ファイル，記録ディレクトリへの保存
 
 # AI が実行できるコマンドの唯一の定義元．
 # engine_*.sh が許可リストを組み立て，build_prompt が指示文へ注入する．
 ALLOWED_COMMANDS="pdftotext pdfimages pdftoppm pdfinfo curl"
 
-# 対象と補助資料の記述を組み立てて prompt.md を書く
+# 対象と補助資料の記述を組み立てて prompt.md を書く．
+# 既存タグを Notion から取得して埋め込むので，取得できなければ 1 を返す（AI は起動しない）．
 build_prompt() {  # <対象の記述> <補助資料の記述（空でよい）>
-  local target="$1" aux="$2" sedexpr aux_section=""
-  sedexpr="s|{{NOTION_DATA_SOURCE_ID}}|$NOTION_DATA_SOURCE_ID|g;s|{{ALLOWED_COMMANDS}}|$ALLOWED_COMMANDS|g"
+  local target="$1" aux="$2" tags aux_section=""
+
+  if ! tags="$(py "$REPO_ROOT/lib/notion.py" tags 2>>"$RUN_LOG")"; then
+    ERROR_MESSAGE="Notion のデータベースを確認できなかった（詳細: ${RUN_LOG}）"
+    return 1
+  fi
 
   if [ -n "$aux" ]; then
     aux_section="$(printf '%s\n' \
@@ -28,20 +35,42 @@ build_prompt() {  # <対象の記述> <補助資料の記述（空でよい）>
       "$aux")"
   fi
 
-  {
-    sed "$sedexpr" "$REPO_ROOT/prompts/registration.md"
-    printf '\n\n---\n\n'
-    sed "$sedexpr" "$REPO_ROOT/prompts/headless_addendum.md"
-    printf '\n\n---\n\n# 今回の対象\n\n%s\n%s\n' "$target" "$aux_section"
-  } >"$RECORD_DIR/prompt.md"
+  py -c '
+import sys
+repo, tags, commands, target, aux, out = sys.argv[1:7]
+parts = [open(f"{repo}/prompts/{name}", encoding="utf-8").read()
+         for name in ("registration.md", "headless_addendum.md")]
+text = "\n\n---\n\n".join(parts)
+text = text.replace("{{EXISTING_TAGS}}", tags or "（まだ無い）")
+text = text.replace("{{ALLOWED_COMMANDS}}", commands)
+text += f"\n\n---\n\n# 今回の対象\n\n{target}\n{aux}\n"
+open(out, "w", encoding="utf-8").write(text)
+' "$REPO_ROOT" "$tags" "$ALLOWED_COMMANDS" "$target" "$aux_section" "$RECORD_DIR/prompt.md"
 
   log_msg "prompt.md を作成した（$(wc -c <"$RECORD_DIR/prompt.md" | tr -d ' ') バイト）"
+}
+
+# 対象の所在を記録する．登録だけをやり直すとき（ref --register）に，
+# 改名・移動の対象を知るために使う．
+save_target() {
+  py -c '
+import json, sys
+keys = ("kind", "mode", "path", "url", "label")
+json.dump(dict(zip(keys, sys.argv[2:])), open(sys.argv[1], "w", encoding="utf-8"),
+          ensure_ascii=False, indent=2)
+' "$RECORD_DIR/target.json" "$TARGET_KIND" "${RUN_MODE:-}" "${TARGET_PATH:-}" \
+    "$([ "$TARGET_KIND" = url ] && printf '%s' "$TARGET_LABEL")" "$TARGET_LABEL"
 }
 
 # AI を実行し，出力を検証して RESULT_* を設定する．
 # 返り値 0 = status が success かつ citation_key が妥当，1 = それ以外
 analyze() {  # <対象の記述> <補助資料の記述>
-  build_prompt "$1" "$2"
+  save_target
+  if ! build_prompt "$1" "$2"; then
+    log_msg "$ERROR_MESSAGE"
+    step_failed analyze
+    return 1
+  fi
 
   # 足場のファイルは AI のカレントディレクトリに置かない．
   # 置くと AI が「対象以外のファイルがある」と報告してしまう．
@@ -65,47 +94,24 @@ analyze() {  # <対象の記述> <補助資料の記述>
 
   RESULT_JSON="$RECORD_DIR/result.json"
   if py "$REPO_ROOT/lib/validate_result.py" \
-      "$raw" "$REPO_ROOT/schema/result.schema.json" "$RESULT_JSON" 2>>"$RUN_LOG"; then
+      "$raw" "$REPO_ROOT/schema/result.schema.json" "$WORK_DIR" "$RECORD_DIR" 2>>"$RUN_LOG"; then
     RESULT_STATUS="$(json_get "$RESULT_JSON" status)"
     CITATION_KEY="$(normalize_key "$(json_get "$RESULT_JSON" citation_key)")"
     TITLE="$(json_get "$RESULT_JSON" title)"
-    NOTION_URL="$(json_get "$RESULT_JSON" notion_url)"
     ERROR_MESSAGE="$(json_get "$RESULT_JSON" error)"
   else
     log_msg "出力JSONの検証に失敗した"
-    RESULT_STATUS="failed"; CITATION_KEY=""; TITLE=""; NOTION_URL=""
-    ERROR_MESSAGE="AIの出力JSONを検証できなかった（記録: ${RECORD_DIR}）"
-
-    # 構造化出力が無くてもページが作成済みであることはありうる．
-    # 存在するページを「未作成・再実行可」と通知すると重複登録になるため，
-    # transcript から URL を拾って通知の種類を正しく選べるようにする．
-    NOTION_URL="$(engine_find_notion_url "${SESSION_ID:-}")"
-    if [ -n "$NOTION_URL" ]; then
-      log_msg "transcript から作成済みページを検出した: $NOTION_URL"
-    fi
-    # 記録の形を揃えるため，検証できなかった場合も result.json を残す
-    py -c '
-import json, sys
-json.dump({"status": "failed", "citation_key": "", "title": "",
-           "notion_url": sys.argv[3], "error": sys.argv[2]},
-          open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-' "$RESULT_JSON" "${engine_error:-$ERROR_MESSAGE}" "$NOTION_URL" 2>/dev/null || true
-  fi
-
-  # AI が担うステップを記録する．判定はこの2つの出力項目だけで足りる．
-  # ページを作れなかった場合，完成には着手できていないので skipped のままにする．
-  if [ -n "$NOTION_URL" ]; then
-    step_completed create
-    if [ "$RESULT_STATUS" = "success" ]; then step_completed finish; else step_failed finish; fi
-  else
-    step_failed create
+    RESULT_STATUS="failed"; CITATION_KEY=""; TITLE=""
+    ERROR_MESSAGE="AIの出力JSONを検証できなかった（詳細: ${RUN_LOG}）"
   fi
 
   # 成功の定義：終了コード0，status=success，正規化後の citation_key が妥当
   if [ "$ENGINE_RC" = "0" ] && [ "$RESULT_STATUS" = "success" ] && key_is_sane "$CITATION_KEY"; then
     [ -n "${GUARD_WARNING:-}" ] && log_msg "注意: 成功したが混入ガードの警告がある: ${GUARD_WARNING}"
+    step_completed analyze
     return 0
   fi
+  step_failed analyze
 
   # エンジン自身の失敗が最も上位の原因なので，これを優先する
   if [ -n "$engine_error" ]; then
@@ -114,6 +120,35 @@ json.dump({"status": "failed", "citation_key": "", "title": "",
     ERROR_MESSAGE="citation_key が妥当でない（正規化後: \"$CITATION_KEY\" / 正規化前: \"$(json_get "$RESULT_JSON" citation_key)\"）．非ASCII名のローマ字化に失敗した可能性がある"
   fi
   [ -z "$ERROR_MESSAGE" ] && ERROR_MESSAGE="原因不明（終了コード=${ENGINE_RC} status=${RESULT_STATUS}）"
+  return 1
+}
+
+# 検証済みの出力から Notion ページを作る．
+# lib/notion.py は失敗時に作りかけのページをゴミ箱へ移すので，失敗は原則
+# 「ページ未作成」である．ゴミ箱へ移せなかった場合だけ NOTION_URL が残る．
+# 返り値 0 = 作成した，1 = 作成できなかった
+create_page() {
+  local url rc=0
+  # 正規化後のキーで登録する（ファイル名と Notion のキーを一致させる）
+  py -c '
+import json, sys
+r = json.load(open(sys.argv[1], encoding="utf-8"))
+r["citation_key"] = sys.argv[2]
+json.dump(r, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+' "$RESULT_JSON" "$CITATION_KEY"
+
+  url="$(py "$REPO_ROOT/lib/notion.py" register "$RESULT_JSON" "$RECORD_DIR" 2>>"$RUN_LOG")" || rc=$?
+  NOTION_URL="$url"
+  if [ "$rc" = "0" ]; then
+    log_msg "Notion ページを作成した: $NOTION_URL"
+    step_completed create
+    return 0
+  fi
+  step_failed create
+  ERROR_MESSAGE="Notion への登録に失敗した: $(tail -n 1 "$RUN_LOG")"
+  log_msg "$ERROR_MESSAGE"
+  # ページが残っていなければ，AI を再実行せずに登録だけをやり直せる
+  [ -z "$NOTION_URL" ] && RETRY_HINT="ref --register $RUN_ID"
   return 1
 }
 

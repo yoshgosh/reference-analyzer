@@ -42,7 +42,14 @@ preflight() {
     echo "  Slack             : 未設定（通知は送られない）"
   fi
 
-  echo "  NOTION_DATA_SOURCE_ID : $NOTION_DATA_SOURCE_ID"
+  # トークン・接続・プロパティの形を一度に確かめる（lib/notion.py がスキーマを照合する）
+  local notion_err
+  if notion_err="$(py "$REPO_ROOT/lib/notion.py" tags 2>&1 >/dev/null)"; then
+    echo "  Notion            : 接続できる（data_source=${NOTION_DATA_SOURCE_ID}）"
+  else
+    echo "  Notion            : 確認できない — ${notion_err}" >&2
+    ok=1
+  fi
   echo "  inbox             : $PAPER_INBOX_DIR"
   echo "  in_progress       : $PAPER_IN_PROGRESS_DIR"
   echo "  PAPER_PARALLEL    : $PAPER_PARALLEL"
