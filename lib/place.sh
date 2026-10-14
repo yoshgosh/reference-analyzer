@@ -75,7 +75,7 @@ rename_step() {  # <解析と登録が成功なら1>
 }
 
 # 自動の最後の段：改名済みの対象（CURRENT_PATH）を PAPER_ROOT へ出す．
-# 自動の place_result と，自動の実行を登録だけやり直す ref --register が共有する．
+# 自動の place_result と，自動の実行を再開する ref --resume が共有する．
 move_step() {
   local dest
   if dest="$(place_file "$CURRENT_PATH" "$PAPER_ROOT")"; then

@@ -9,7 +9,7 @@
 # 入出力:
 #   入力  TARGET_KIND，TARGET_LABEL（PDF のファイル名 または URL），AUX_DESC（空でよい）．
 #         作業ディレクトリには対象のコピーと aux/ だけが入っている（lib/run_one.sh が用意する）
-#   出力  RESULT_JSON，CITATION_KEY，TITLE，ERROR_MESSAGE，NOTION_URL，RETRY_HINT，
+#   出力  RESULT_JSON，CITATION_KEY，TITLE，ERROR_MESSAGE，NOTION_URL，
 #         USAGE_SUMMARY（AI の使用量．通知の usage:）
 #   副作用 Notion ページの作成，作業ディレクトリ内の一時ファイル，記録ディレクトリへの保存
 
@@ -76,8 +76,7 @@ open(out, "w", encoding="utf-8").write(text)
   log_msg "prompt.md を作成した（$(wc -c <"$RECORD_DIR/prompt.md" | tr -d ' ') バイト）"
 }
 
-# 対象の所在を記録する．登録だけをやり直すとき（ref --register）に，
-# 改名・移動の対象を知るために使う．
+# 対象と経路を記録する．再開（ref --resume）が経路（ステップの並び）と対象を知るために使う．
 save_target() {
   py -c '
 import json, sys
@@ -147,7 +146,8 @@ analyze() {
 
 # 検証済みの出力から Notion ページを作る．
 # lib/notion.py は失敗時に作りかけのページをゴミ箱へ移すので，失敗は原則
-# 「ページ未作成」である．ゴミ箱へ移せなかった場合だけ NOTION_URL が残る．
+# 「ページ未作成」である．ゴミ箱へ移せなかった場合だけ NOTION_URL が残り，
+# notion_page.json に complete: false で記録される（再開時に捨てる）．
 # 返り値 0 = 作成した，1 = 作成できなかった
 create_page() {
   local rc=0
@@ -160,8 +160,6 @@ create_page() {
   step_failed create
   ERROR_MESSAGE="Notion への登録に失敗した: $(tail -n 1 "$RUN_LOG")"
   log_msg "$ERROR_MESSAGE"
-  # ページが残っていなければ，AI を再実行せずに登録だけをやり直せる
-  [ -z "$NOTION_URL" ] && RETRY_HINT="ref --register $RUN_ID"
   return 1
 }
 

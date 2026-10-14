@@ -3,7 +3,8 @@
 #
 #   ref <対象>                        対象を1つ処理する（PDFファイル または URL）
 #   ref <対象> --with <補助資料...>   同じ文献を補助する資料を添えて処理する
-#   ref --register <run_id>           解析済みの実行について，Notion への登録だけをやり直す
+#   ref --resume <run_id>             失敗した実行を，AI を再実行せずに止まったステップから続ける
+#                                     （解析が済んでいる場合のみ．登録・改名・移動を行う）
 #
 # 1コマンド = 1文献 = AI プロセス1回 = Notion 1ページ．
 # 補助資料はファイル・フォルダ・URL を混在できる．フォルダは展開せず，
@@ -20,7 +21,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/lib/core.sh"
 
 usage() {
-  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -48,66 +49,116 @@ report_failed() {
     echo "Failed: ${TITLE:-$TARGET_LABEL}"
     printf '%s\n' "$(steps_log | tr ' ' '\n' | sed 's/^/  /')"
     echo "error: ${ERROR_MESSAGE:-不明}"
-    [ -n "${RETRY_HINT:-}" ] && echo "retry: ${RETRY_HINT}"
-    [ -n "${NOTION_URL:-}" ] && echo "notion: ${NOTION_URL}  # 作成済み．再実行の前に削除する"
+    local next; next="$(next_action)"
+    [ -n "$next" ] && echo "next: ${next}"
+    [ -n "${NOTION_URL:-}" ] && echo "notion: ${NOTION_URL}"
     [ "$TARGET_KIND" = file ] && [ -n "${CURRENT_PATH:-}" ] && echo "file: ${CURRENT_PATH}"
     echo "log: ${RECORD_DIR}"
   } >&2
   return 0
 }
 
-# ---------------------------------------------------------------- 登録だけのやり直し
+# ---------------------------------------------------------------- 再開
 
-# AI の出力（result.json）と代表画像は記録ディレクトリに残っている．
-# それを使って Notion への登録と，その後の改名・移動だけを行う．AI は起動しない．
-# 記録は PAPER_LOG_RETENTION_DAYS（既定7日）で消えるので，それまでに行う．
-register_again() {  # <run_id>
-  local page
+has_step() { case " $STEP_LIST " in *" $1 "*) return 0 ;; esac; return 1; }
+
+# 解析の結果（result.json と代表画像）は記録ディレクトリに残っている．それを使い，
+# 元の実行で completed にならなかったステップ（create・rename・move）から続ける．
+# AI は起動しない．記録は PAPER_LOG_RETENTION_DAYS（既定7日）で消えるので，それまでに行う．
+#
+# 通知には元の経路のステップを全部並べる（番号が元の通知と一致する）．
+resume_run() {  # <run_id>
+  local page state s
 
   RUN_ID="$1"
   RECORD_DIR="$PAPER_LOG_DIR/$RUN_ID"
   RESULT_JSON="$RECORD_DIR/result.json"
-  if [ ! -f "$RESULT_JSON" ] || [ ! -f "$RECORD_DIR/target.json" ]; then
-    echo "実行記録が見つからない（解析が終わっていないか，保存期間を過ぎた）: $RECORD_DIR" >&2
-    exit 1
-  fi
-  if [ "$(json_get "$RESULT_JSON" status)" != success ]; then
-    echo "この実行は解析に失敗している．登録ではなく，対象を処理し直せ: $RUN_ID" >&2
-    exit 1
-  fi
   page="$RECORD_DIR/notion_page.json"
-  if [ -f "$page" ]; then
-    if [ "$(json_get "$page" complete)" = True ]; then
-      echo "既に登録済みである: $(json_get "$page" url)" >&2
-    else
-      echo "作りかけのページが残っている: $(json_get "$page" url)" >&2
-      echo "Notion でそのページを削除し，$page を消してから再実行せよ" >&2
+  state="$RECORD_DIR/state.json"
+  if [ ! -d "$RECORD_DIR" ]; then
+    echo "実行記録が見つからない（run_id の誤りか，保存期間を過ぎた）: $RECORD_DIR" >&2
+    exit 1
+  fi
+  if [ ! -f "$RESULT_JSON" ] || [ ! -f "$RECORD_DIR/target.json" ] ||
+     [ "$(json_get "$RESULT_JSON" status)" != success ]; then
+    echo "この実行は解析に失敗しているので再開できない．対象を処理し直せ: $RUN_ID" >&2
+    # 自動なら in_progress に残っているので inbox へ戻す．手動は元のコマンドを打ち直す
+    # （--with を付けていた場合は同じく付ける）
+    s="$(json_get "$RECORD_DIR/state.json" current_path)"
+    [ -z "$s" ] && s="$(json_get "$RECORD_DIR/target.json" path)"
+    if [ "$(json_get "$RECORD_DIR/target.json" kind)" = url ]; then
+      echo "next: ref $(shell_path "$(json_get "$RECORD_DIR/target.json" url)")" >&2
+    elif [ "$(json_get "$RECORD_DIR/target.json" mode)" = auto ]; then
+      echo "next: mv $(shell_path "$s") $(shell_path "$PAPER_INBOX_DIR")/" >&2
+    elif [ -n "$s" ]; then
+      echo "next: ref $(shell_path "$s")" >&2
     fi
     exit 1
   fi
 
   TARGET_KIND="$(json_get "$RECORD_DIR/target.json" kind)"
   TARGET_LABEL="$(json_get "$RECORD_DIR/target.json" label)"
-  TARGET_PATH="$(json_get "$RECORD_DIR/target.json" path)"
   CITATION_KEY="$(json_get "$RESULT_JSON" citation_key)"
   TITLE="$(json_get "$RESULT_JSON" title)"
-  CURRENT_PATH="$TARGET_PATH"
   GUARD_WARNING=""
-  RUN_MODE=register
 
-  # 元の経路に応じて，登録の後に行うステップを決める
-  STEP_LIST="create"
-  if [ "$TARGET_KIND" = file ]; then
-    if [ -f "$TARGET_PATH" ]; then
-      STEP_LIST="$STEP_LIST rename"
-      [ "$(json_get "$RECORD_DIR/target.json" mode)" = auto ] && STEP_LIST="$STEP_LIST move"
-    else
-      echo "注意: 対象ファイルが元の場所に無いので，改名・移動はしない: $TARGET_PATH" >&2
-      CURRENT_PATH=""
+  # 元の経路のステップ
+  if [ "$TARGET_KIND" = url ]; then
+    STEP_LIST="analyze create"
+  elif [ "$(json_get "$RECORD_DIR/target.json" mode)" = auto ]; then
+    STEP_LIST="fetch analyze create rename move"
+  else
+    STEP_LIST="analyze create rename"
+  fi
+  RUN_MODE=resume
+
+  # 済んだステップを引き継ぐ．解析は result.json が success なので済んでいる．
+  # state.json が無い古い記録では，ページの有無だけから判断する
+  has_step fetch && step_completed fetch
+  step_completed analyze
+  for s in $(py -c '
+import json, sys
+try:
+    steps = json.load(open(sys.argv[1], encoding="utf-8"))["steps"]
+except Exception:
+    steps = {}
+print(" ".join(k for k, v in steps.items() if v == "completed"))
+' "$state"); do
+    step_completed "$s"
+  done
+
+  # ページ：完成していれば create は済んでいる．作りかけなら捨ててから作り直す
+  if [ -f "$page" ]; then
+    if [ "$(json_get "$page" complete)" = True ]; then
+      step_completed create
+      NOTION_URL="$(json_get "$page" url)"
+    elif ! py "$REPO_ROOT/lib/notion.py" discard "$RECORD_DIR"; then
+      echo "作りかけのページを捨てられなかった: $(json_get "$page" url)" >&2
+      echo "Notion でそのページを削除し，$page を消してから再実行せよ" >&2
+      exit 1
     fi
-    LOCK_PATH="$(target_lock_path file "$TARGET_PATH")"
+  fi
+
+  if steps_all_completed; then
+    echo "この実行は既に完了している: $RUN_ID" >&2
+    exit 0
+  fi
+
+  # ファイルはいまの場所から動かす（改名済みで移動だけが残っている場合がある）
+  CURRENT_PATH="$(json_get "$state" current_path)"
+  [ -z "$CURRENT_PATH" ] && CURRENT_PATH="$(json_get "$RECORD_DIR/target.json" path)"
+  TARGET_PATH="$CURRENT_PATH"
+  if [ "$TARGET_KIND" = file ]; then
+    if [ "$(step_state rename)" != completed ] || { has_step move && [ "$(step_state move)" != completed ]; }; then
+      if [ ! -f "$CURRENT_PATH" ]; then
+        echo "対象ファイルが見つからない: $CURRENT_PATH" >&2
+        echo "場所を移した場合は，手で改名・移動せよ（Citation Key: $CITATION_KEY）" >&2
+        exit 1
+      fi
+    fi
+    LOCK_PATH="$(target_lock_path file "$CURRENT_PATH")"
     if ! acquire_lock "$LOCK_PATH" 5; then
-      echo "この資料は処理中である: $TARGET_LABEL" >&2
+      echo "この資料は処理中である: $(basename "$CURRENT_PATH")" >&2
       LOCK_PATH=""
       exit 1
     fi
@@ -115,13 +166,20 @@ register_again() {  # <run_id>
 
   RUN_LOG="$RECORD_DIR/run.log"
   STARTED_AT="$(date '+%s')"
-  log_msg "---- 登録だけをやり直す（ref --register）----"
+  log_msg "---- 再開する（ref --resume）: $(steps_log) ----"
   notify_start
 
-  if create_page && [ "$TARGET_KIND" = file ] && [ -n "$CURRENT_PATH" ]; then
-    rename_step 1 && case " $STEP_LIST " in *" move "*) move_step || true ;; esac
+  # 前のステップが成功したときだけ次へ進む（create が済まないうちに改名しない）
+  if [ "$(step_state create)" = completed ] || create_page; then
+    if has_step rename && [ "$(step_state rename)" != completed ]; then
+      rename_step 1 || true
+    fi
+    if has_step move && [ "$(step_state rename)" = completed ] && [ "$(step_state move)" != completed ]; then
+      move_step || true
+    fi
   fi
 
+  save_state
   log_msg "ステップ: $(steps_log)"
   notify_result
   if steps_all_completed; then
@@ -136,13 +194,13 @@ register_again() {  # <run_id>
 
 TARGET="$1"; shift
 
-REGISTER_RUN_ID=""
-if [ "$TARGET" = "--register" ]; then
+RESUME_RUN_ID=""
+if [ "$TARGET" = "--resume" ]; then
   if [ "$#" -ne 1 ]; then
-    echo "使い方: ref --register <run_id>" >&2
+    echo "使い方: ref --resume <run_id>" >&2
     exit 2
   fi
-  REGISTER_RUN_ID="$1"; shift
+  RESUME_RUN_ID="$1"; shift
 fi
 
 AUX_ARGS=()
@@ -171,10 +229,12 @@ LOCK_PATH=""
 cleanup_on_exit() {
   release_slot 2>/dev/null || true
   [ -n "$LOCK_PATH" ] && release_lock "$LOCK_PATH"
+  # set -e の下では，終了時の処理の最後の終了コードが exit の値を上書きする
+  return 0
 }
 trap cleanup_on_exit EXIT
 
-[ -n "$REGISTER_RUN_ID" ] && register_again "$REGISTER_RUN_ID"
+[ -n "$RESUME_RUN_ID" ] && resume_run "$RESUME_RUN_ID"
 
 # ---------------------------------------------------------------- 対象の判別
 
@@ -261,6 +321,23 @@ if [ "$AUX_BYTES" -gt "$PAPER_AUX_MAX_BYTES" ]; then
   echo "補助資料が大きすぎる: $((AUX_BYTES / 1048576))MB（上限 $((PAPER_AUX_MAX_BYTES / 1048576))MB）" >&2
   echo "PAPER_AUX_MAX_BYTES で変更できる" >&2
   exit 2
+fi
+
+# ---------------------------------------------------------------- やり直しのコマンド
+
+# 解析の前で失敗したときに next: に出す．どこからでも打てるよう，パスは絶対パスにする
+abs_path() {  # <パス>
+  case "$1" in
+    http://*|https://*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$(cd "$(dirname "$1")" && pwd)" "$(basename "$1")" ;;
+  esac
+}
+REDO_COMMAND="ref $(shell_path "$(abs_path "$TARGET")")"
+if [ "${#AUX_ARGS[@]}" -gt 0 ]; then
+  REDO_COMMAND="$REDO_COMMAND --with"
+  for a in "${AUX_ARGS[@]}"; do
+    REDO_COMMAND="$REDO_COMMAND $(shell_path "$(abs_path "$a")")"
+  done
 fi
 
 # ---------------------------------------------------------------- 補助資料の記述

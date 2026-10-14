@@ -256,6 +256,45 @@ steps_log() {
   printf '%s' "$out"
 }
 
+# 進み具合を記録ディレクトリの state.json に書く．再開（ref --resume）がこれを読み，
+# completed でないステップから続ける．ファイルは改名・移動で場所が変わるので，
+# いまの場所（CURRENT_PATH）も残す．
+save_state() {
+  py -c '
+import json, sys
+path, current, steps = sys.argv[1], sys.argv[2], sys.argv[3].split()
+json.dump({"steps": dict(s.split("=", 1) for s in steps), "current_path": current},
+          open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+' "$RECORD_DIR/state.json" "${CURRENT_PATH:-}" "$(steps_log)"
+}
+
+# シェルにそのまま貼れる形のパス．ホーム配下は ~ で短くする（~ は引用符の外に置く）．
+shell_path() {  # <パス>
+  local p="$1" prefix=""
+  case "$p" in
+    "$HOME"/*) prefix="~/"; p="${p#"$HOME"/}" ;;
+  esac
+  case "$p" in
+    *[!A-Za-z0-9._/:@%+=,-]*) printf "%s'%s'" "$prefix" "$(printf '%s' "$p" | sed "s/'/'\\\\''/g")" ;;
+    *) printf '%s%s' "$prefix" "$p" ;;
+  esac
+}
+
+# 失敗したときの次の手（通知と画面の next:）．出せなければ空文字列を返す．
+#
+#   解析が済んでいる   … ref --resume <run_id>（AI を再実行せず，止まったステップから続ける）
+#   解析が済んでいない … REDO_COMMAND（やり直す．手動=元のコマンド／自動=inbox へ戻す mv）
+#
+# REDO_COMMAND は経路が設定する．自動は取り込みと資料ロックが済んでから設定するので，
+# それより前の失敗（他のプロセスが先に取った等）では next: を出さない．
+next_action() {
+  if [ "$(step_state analyze)" = completed ]; then
+    printf 'ref --resume %s' "$RUN_ID"
+  else
+    printf '%s' "${REDO_COMMAND:-}"
+  fi
+}
+
 # ---------------------------------------------------------------- 混入ガード
 
 # 作業ディレクトリの祖先に CLAUDE.md があれば，そのパスを列挙する．

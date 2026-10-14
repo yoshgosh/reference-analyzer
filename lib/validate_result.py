@@ -10,8 +10,8 @@ engine_raw.json は claude -p --output-format json の出力である．
 citation_key は正規化して書き出す（改名と Notion の Citation Key にそのまま使う）．
 
 代表画像は記録ディレクトリへ image.<拡張子> としてコピーし，image_file をその名前に
-書き換える．作業ディレクトリは成功時に消えるが，記録は残るので，登録だけを
-やり直せる（ref --register）．
+書き換える．作業ディレクトリは成功時に消えるが，記録は残るので，AI を再実行
+せずに続きを行える（ref --resume）．
 検証に通らなければ，理由を標準エラーの最後の行に書いて終了コード 1 を返す．
 """
 import json

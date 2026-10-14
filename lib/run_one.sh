@@ -20,6 +20,7 @@
 #   TARGET_PATH      対象ファイルの実パス（file のとき．自動は prepare_target が設定する）
 #   TARGET_LABEL     ファイル名 または URL．作業ディレクトリ内のコピーもこの名前になる
 #   AUX_DESC         プロンプトの「補助資料」に入れる記述（空でよい）
+#   REDO_COMMAND     解析の前で失敗したときに next: に出すやり直しのコマンド
 #   CURRENT_PATH     対象ファイルのいまの場所．run_one を呼ぶ前に設定し，
 #                    ファイルが動くたびに更新する（通知はこれだけを出す）
 #   STEP_LIST        通知に出すステップ（経路に存在するものだけ）
@@ -63,6 +64,7 @@ run_one() {
   place_result "$done"
 
   save_records
+  save_state
   log_msg "ステップ: $(steps_log)"
   notify_result
 

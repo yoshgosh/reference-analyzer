@@ -96,6 +96,7 @@ launchd/install.sh install     # 解除は uninstall，確認は status
 ```sh
 bin/ref paper.pdf                    # PDF を1本
 bin/ref https://arxiv.org/abs/...    # Webページ・GitHubリポジトリ等
+bin/ref --resume <run_id>            # 失敗した実行を止まったところから続ける（「失敗したとき」）
 ```
 
 同じ文献を補助する資料を添えられる．ファイル・フォルダ・URL を混ぜてよい．
@@ -200,7 +201,7 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 ④ rename file: skipped
 ⑤ move file: skipped
 error: Notion への登録に失敗した: POST /pages が 502 で拒否された
-retry: `ref --register 20261013-171025-53515`
+next: `ref --resume 20261013-171025-53515`
 citation_key: `Reingold1981TidierDrawings`
 file: `~/Research/Papers/in_progress/tidier-drawings.pdf`
 run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium, duration: 63sec, usage: 9 turns, 170k in / 5.3k out tokens, $0.16 (list price)
@@ -241,32 +242,42 @@ run_id: `20261013-171025-53515`, trigger: auto, model: claude / sonnet / medium,
 最終行の `usage:` は AI の使用量である．ターン数，入力と出力のトークン数，API の定価で換算した
 金額を示す．サブスクリプションで使っている場合，金額は実際の請求額ではなく，利用上限の
 減り方の目安である．入力はターンごとに文脈全体を読み直す分を含むので，ターン数とほぼ比例する．
-AI を動かしていない実行（`ref --register` など）では出ない．
+AI を動かしていない実行（`ref --resume` など）では出ない．
 
-`retry:` の行は，解析は済んだが Notion への登録だけが失敗したときに出る（「失敗したとき」を参照）．
+`next:` の行は `🚨 Failed` のときに出る次の手である（「失敗したとき」を参照）．
 
 ## 失敗したとき
 
-**`in_progress/` に残っているものが，完了していないものである．** 元の名前のままなので，
-inbox へ戻せば再実行できる．
+**`next:` の行に次の手が出る．** 通知（自動・手動）と画面（手動）に，そのまま貼れるコマンドで
+出る．次の手は2種類しかない．
+
+| 失敗した段階 | 次の手 | AI |
+|---|---|---|
+| 解析より前・解析（`analyze source`） | **やり直す**．自動は inbox へ戻す，手動は同じコマンドを打ち直す | 再実行する |
+| 解析より後（`create page`・`rename file`・`move file`） | **`ref --resume <run_id>`** で止まったところから続ける | 再実行しない |
 
 ```sh
+# やり直す（自動）
 mv ~/Research/Papers/in_progress/paper.pdf ~/Research/Papers/inbox/
+
+# 続ける
+bin/ref --resume 20261013-171025-53515
 ```
 
-手動で失敗した場合は原本に触っていないので，同じコマンドを打ち直すだけでよい．
+**解析より後で失敗したものを inbox へ戻してはならない．** Notion のページが既にできている場合が
+あり，やり直すと2件になる．`--resume` は済んだステップを飛ばすので重複しない．
 
-### 登録だけが失敗したとき
+`--resume` について：
 
-**`retry:` の行が出ていれば，AI を再実行せずに登録だけをやり直せる．** 解析の結果と代表画像は
-実行記録に残っているので，利用量を消費しない．
+- 解析の結果と代表画像は実行記録に残っているので，利用量を消費しない
+- 元の経路のステップをすべて行う（自動なら改名して直下へ移すところまで）．ファイルが改名済みでも，
+  いまの場所から続ける
+- 作りかけの Notion ページが残っていれば，ゴミ箱へ移してから作り直す
+- 実行記録は既定7日で消えるので，それまでに行う．解析が失敗した実行には使えない（やり直しの
+  コマンドを表示して止まる）
 
-```sh
-bin/ref --register 20261013-171025-53515
-```
-
-成功すると，元の実行と同じく改名し，自動の場合は直下へ移す．実行記録は既定7日で消えるので，
-それまでに行う．登録に失敗したときは作りかけのページをゴミ箱へ移すので，ページの削除は要らない．
+`next:` が出ないのは，他のプロセスが先に同じファイルを取り込んだときなど，こちらで行うことが
+無い場合である．
 
 ### 原因別
 
@@ -277,7 +288,7 @@ bin/ref --register 20261013-171025-53515
 | `AIの出力を検証できなかった: citation_key が妥当でない…` | 著者名のローマ字化に失敗した．繰り返すなら `--with` で公式サイトを添える |
 | `AIの出力を検証できなかった: …`（その他） | そのまま再実行する．繰り返すなら記録の `run.log` と `engine_raw.json` を見る |
 | `図表は存在するが…取得できなかった` | そのまま再実行する．繰り返すなら `--with` で公式サイトを添える |
-| `Notion への登録に失敗した` | `retry:` の行のコマンドで登録だけをやり直す |
+| `Notion への登録に失敗した` | 原因を直してから `next:` の `ref --resume` で続ける |
 | `Notion のデータベースを確認できなかった` | 下の「困ったとき」の `Notion` の行を見る（AI は起動していない） |
 
 ### 困ったとき
@@ -288,7 +299,8 @@ ls ~/Research/Papers/.logs/<run_id>/              # 1実行の記録
 ```
 
 記録には `prompt.md`（AIに渡した指示文の全文）・`transcript.jsonl`（AIの全操作）・
-`result.json`（AIの最終出力）・`image.*`（代表画像）・`notion_page.json`（作成したページ）が入っている．
+`result.json`（AIの最終出力）・`image.*`（代表画像）・`notion_page.json`（作成したページ）・
+`state.json`（ステップの状態とファイルのいまの場所．`--resume` が読む）が入っている．
 
 | 症状 | 原因 |
 |---|---|

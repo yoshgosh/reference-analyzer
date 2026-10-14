@@ -32,6 +32,8 @@ LOCK_PATH=""
 cleanup_on_exit() {
   release_slot 2>/dev/null || true
   [ -n "$LOCK_PATH" ] && release_lock "$LOCK_PATH"
+  # set -e の下では，終了時の処理の最後の終了コードが exit の値を上書きする
+  return 0
 }
 trap cleanup_on_exit EXIT
 
@@ -67,6 +69,8 @@ prepare_target() {
     ERROR_MESSAGE="この資料は既に処理中である"
     return 1
   fi
+  # ここから先の失敗は inbox へ戻せばやり直せる（解析が済んでいれば ref --resume）
+  REDO_COMMAND="mv $(shell_path "$TARGET_PATH") $(shell_path "$PAPER_INBOX_DIR")/"
   return 0
 }
 

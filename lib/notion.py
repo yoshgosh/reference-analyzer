@@ -4,6 +4,7 @@
 使い方 :
   notion.py tags                          現在のタグの選択肢を1行に1つ出力する
   notion.py register <result.json> <dir>  ページを作成し，URL を出力する
+  notion.py discard <dir>                 作りかけのページをゴミ箱へ移す（ref --resume が使う）
 
 register は検証済みの result.json（lib/validate_result.py の出力）を受け取る．
 画像は <dir>/<image_file> にある．作成したページは <dir>/notion_page.json に記録する．
@@ -20,7 +21,7 @@ register は検証済みの result.json（lib/validate_result.py の出力）を
                                  position=start で後から差し込む
 
 4 で失敗したらページをゴミ箱へ移す．「ページはあるが未完成」の状態を残さないためで，
-こうしておけば失敗は常に「ページ未作成」となり，登録だけをやり直せる．
+こうしておけば失敗は常に「ページ未作成」となり，そこから続けられる（ref --resume）．
 """
 import json
 import os
@@ -187,6 +188,19 @@ def register(result_path, record_dir):
     print(page["url"])
 
 
+def discard(record_dir):
+    """作りかけ（complete: false）のページをゴミ箱へ移し，notion_page.json を消す．
+    register がゴミ箱へ移すことにも失敗した場合の後始末である．"""
+    path = os.path.join(record_dir, "notion_page.json")
+    with open(path, encoding="utf-8") as fh:
+        page = json.load(fh)
+    if page.get("complete"):
+        raise NotionError(f"完成したページは捨てない: {page['url']}")
+    call("PATCH", f"/pages/{page['id']}", {"in_trash": True})
+    os.remove(path)
+    print(f"作りかけのページをゴミ箱へ移した: {page['url']}", file=sys.stderr)
+
+
 def record(record_dir, page, complete):
     with open(os.path.join(record_dir, "notion_page.json"), "w", encoding="utf-8") as fh:
         json.dump({"id": page["id"], "url": page["url"], "complete": complete}, fh, indent=2)
@@ -199,6 +213,8 @@ def main():
                 print(o["name"])
         elif sys.argv[1:2] == ["register"] and len(sys.argv) == 4:
             register(sys.argv[2], sys.argv[3])
+        elif sys.argv[1:2] == ["discard"] and len(sys.argv) == 3:
+            discard(sys.argv[2])
         else:
             print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
             return 2
