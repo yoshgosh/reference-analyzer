@@ -12,6 +12,10 @@ ref <PDF|URL> ────────┘                                       
 
 **1コマンド = 1文献 = AIプロセス1回 = Notionページ1つ**である．
 
+Claude のチャットで登録することもできる（`bin/ref --chat-prompt` で指示文を作って貼る．
+「チャットで登録する」を参照）．この場合はチャットの Claude が Notion コネクタで登録し，
+改名と通知は行わない．
+
 内部の作りと設計の理由は [DESIGN.md](DESIGN.md) にある．
 
 ## 必要なもの
@@ -24,6 +28,7 @@ ref <PDF|URL> ────────┘                                       
 | Notion のデータベース | 登録先 | 下記のプロパティが必要 |
 | Notion の内部コネクション | Notion への登録 | 下記「Notion 側の準備」 |
 | Slack アプリ | 通知 | Bot Token Scopes に `chat:write` |
+| Claude のチャット ＋ Notion コネクタ | チャットで登録する場合のみ | claude.ai の設定 → コネクタ |
 
 `launchd/install.sh status` で一括して確認できる．
 
@@ -48,7 +53,9 @@ ref <PDF|URL> ────────┘                                       
 `Tag` には新しい選択肢が追加されることがある（既存の選択肢は保持する）．`Rating` と
 `Favorite` の選択肢は追加しない．要約の本文はページ本文に書き，先頭に代表画像を1枚挿入する．
 
-登録はスクリプトが Notion の API で行う．そのための内部コネクションを作る．
+`bin/ref` と自動の経路では，登録はスクリプトが Notion の API で行う．そのための内部コネクションを作る
+（チャットで登録する場合は，チャットの Claude が自分の Notion コネクタで行うので不要．ただし
+`--chat-prompt` が既存タグを取得するのにこのトークンを使う）．
 
 1. https://app.notion.com/developers/connections の **Internal connections** で
    **Create a new connection** を押し，登録先のワークスペースを選ぶ（ワークスペースのオーナー権限が要る）
@@ -186,7 +193,8 @@ in_progress/paper.pdf   ← 処理中．失敗したものもここに残る
 
 ## AI に見せるもの
 
-AI（`claude -p`）は1資料ごとに作業ディレクトリ `.work/<run_id>/` の中で動く．
+`bin/ref` と自動の経路では，AI（`claude -p`）は1資料ごとに作業ディレクトリ `.work/<run_id>/` の
+中で動く（チャットで登録する場合は対象外．チャットの Claude はユーザーのコネクタと権限で動く）．
 
 | | |
 |---|---|
@@ -364,4 +372,5 @@ ls ~/Research/Papers/.logs/<run_id>/              # 1実行の記録
   1本あたり1分程度なので，残っているものは実質的に失敗である．
 - URL を対象にすると PDF より手間がかかる（arXiv の abs ページで 21 ターン．PDF なら約 10）．
   AI が本文や図を Web から取り直すためである．PDF が手に入るなら PDF を渡すほうが安い．
-- 対話画面から起動するスキル，OS通知，`claude` 以外のエンジンは用意していない．
+- チャット用はスキルではなく，指示文を貼る方式である．OS 通知と `claude` 以外のエンジンは
+  用意していない．

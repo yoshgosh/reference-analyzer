@@ -69,6 +69,7 @@ has_step() { case " $STEP_LIST " in *" $1 "*) return 0 ;; esac; return 1; }
 # AI は起動しない．記録は PAPER_LOG_RETENTION_DAYS（既定7日）で消えるので，それまでに行う．
 #
 # 通知には元の経路のステップを全部並べる（番号が元の通知と一致する）．
+# 始められない場合は理由を出して終了する．返り値 0 = 全ステップ completed，1 = それ以外
 resume_run() {  # <run_id>
   local page state s
 
@@ -184,32 +185,19 @@ print(" ".join(k for k, v in steps.items() if v == "completed"))
   save_state
   log_msg "ステップ: $(steps_log)"
   notify_result
-  if steps_all_completed; then
-    report_completed
-    exit 0
-  fi
-  report_failed
-  exit 1
+  steps_all_completed
 }
 
 # ---------------------------------------------------------------- チャット用の指示文
 
-# 共通の指示文（registration.md）にチャット用の追加ルール（chat_addendum.md）をつなげ，
-# 既存タグと登録先を埋める．端末に出すときはクリップボードへコピーし，
-# リダイレクトしたときはそのまま書き出す．
+# 共通の指示文にチャット用の追加ルール（chat_addendum.md）をつなげる（lib/render_prompt.py）．
+# 対象（PDF か URL）はユーザーが各スレッドで送るので，指示文は対象に依存しない．
+# 端末に出すときはクリップボードへコピーし，リダイレクトしたときはそのまま書き出す．
 chat_prompt() {
-  local tags text target
-  if ! tags="$(py "$REPO_ROOT/lib/notion.py" tags)"; then
-    echo "Notion のデータベースを確認できなかった（launchd/install.sh status で確かめる）" >&2
-    exit 1
-  fi
-  # 対象（PDF か URL）はユーザーが各スレッドで送るので，ここでは決めない
-  target="$(printf '%s\n' \
+  local text
+  text="$(py "$REPO_ROOT/lib/render_prompt.py" chat_addendum.md "$(printf '%s\n' \
     "- ユーザーがこのスレッドで送った資料（添付した PDF，または本文に書いた URL）を対象とする．" \
-    "- 複数送られた場合，最初の1つが対象で，2つ目以降は同じ文献の補助資料である．")"
-  text="$(py "$REPO_ROOT/lib/render_prompt.py" chat_addendum.md \
-    "EXISTING_TAGS=${tags:-（まだ無い）}" "NOTION_DATA_SOURCE_ID=$NOTION_DATA_SOURCE_ID")" || exit 1
-  text="$(printf '%s\n\n---\n\n# 今回の対象\n\n%s\n' "$text" "$target")"
+    "- 複数送られた場合，最初の1つが対象で，2つ目以降は同じ文献の補助資料である．")")" || exit 1
 
   if [ -t 1 ]; then
     printf '%s' "$text" | pbcopy
@@ -218,30 +206,23 @@ chat_prompt() {
   else
     printf '%s\n' "$text"
   fi
-  exit 0
 }
 
 # ---------------------------------------------------------------- 引数
 
-TARGET="$1"; shift
-
-CHAT_PROMPT=""
-if [ "$TARGET" = "--chat-prompt" ]; then
-  if [ "$#" -gt 0 ]; then
-    echo "使い方: ref --chat-prompt（対象はチャットで送る）" >&2
-    exit 2
-  fi
-  CHAT_PROMPT=1
-fi
-
-RESUME_RUN_ID=""
-if [ "$TARGET" = "--resume" ]; then
-  if [ "$#" -ne 1 ]; then
-    echo "使い方: ref --resume <run_id>" >&2
-    exit 2
-  fi
-  RESUME_RUN_ID="$1"; shift
-fi
+COMMAND=run
+case "$1" in
+  --resume)
+    [ "$#" -eq 2 ] || { echo "使い方: ref --resume <run_id>" >&2; exit 2; }
+    COMMAND=resume; RESUME_RUN_ID="$2"; shift 2 ;;
+  --chat-prompt)
+    [ "$#" -eq 1 ] || { echo "使い方: ref --chat-prompt（対象はチャットで送る）" >&2; exit 2; }
+    COMMAND=chat-prompt; shift ;;
+  -*)
+    echo "不明なオプション: $1" >&2; usage >&2; exit 2 ;;
+  *)
+    TARGET="$1"; shift ;;
+esac
 
 AUX_ARGS=()
 if [ "$#" -gt 0 ]; then
@@ -274,8 +255,18 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT
 
-[ -n "$CHAT_PROMPT" ] && chat_prompt
-[ -n "$RESUME_RUN_ID" ] && resume_run "$RESUME_RUN_ID"
+case "$COMMAND" in
+  chat-prompt)
+    chat_prompt
+    exit 0 ;;
+  resume)
+    if resume_run "$RESUME_RUN_ID"; then
+      report_completed
+      exit 0
+    fi
+    report_failed
+    exit 1 ;;
+esac
 
 # ---------------------------------------------------------------- 対象の判別
 

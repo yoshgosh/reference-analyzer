@@ -93,6 +93,11 @@ def options(ds, name):
     return prop[prop["type"]]["options"]
 
 
+def tag_names():
+    """現在のタグの選択肢の名前（指示文に埋め込む）．"""
+    return [o["name"] for o in options(data_source(), "Tag")]
+
+
 def text(value):
     """rich_text の配列．長い値（BibTeX 等）は上限ごとに分ける．"""
     return [{"type": "text", "text": {"content": value[i:i + TEXT_LIMIT]}}
@@ -209,8 +214,8 @@ def record(record_dir, page, complete):
 def main():
     try:
         if sys.argv[1:2] == ["tags"]:
-            for o in options(data_source(), "Tag"):
-                print(o["name"])
+            for name in tag_names():
+                print(name)
         elif sys.argv[1:2] == ["register"] and len(sys.argv) == 4:
             register(sys.argv[2], sys.argv[3])
         elif sys.argv[1:2] == ["discard"] and len(sys.argv) == 3:

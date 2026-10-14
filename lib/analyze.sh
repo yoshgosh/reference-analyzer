@@ -39,20 +39,14 @@ target_description() {
   py "$REPO_ROOT/lib/pdf_prep.py" "$WORK_DIR/$TARGET_LABEL" "$WORK_DIR/fulltext.txt" 2>>"$RUN_LOG" || true
 }
 
-# prompt.md を書く．
+# prompt.md を書く（lib/render_prompt.py）．
 # 既存タグを Notion から取得して埋め込むので，取得できなければ 1 を返す（AI は起動しない）．
 build_prompt() {
-  local tags target aux_section=""
-
-  if ! tags="$(py "$REPO_ROOT/lib/notion.py" tags 2>>"$RUN_LOG")"; then
-    ERROR_MESSAGE="Notion のデータベースを確認できなかった（詳細: ${RUN_LOG}）"
-    return 1
-  fi
+  local target err
 
   target="$(target_description)"
-
   if [ -n "${AUX_DESC:-}" ]; then
-    aux_section="$(printf '%s\n' \
+    target="$(printf '%s\n' "$target" \
       "" \
       "## 補助資料" \
       "" \
@@ -61,14 +55,12 @@ build_prompt() {
       "$AUX_DESC")"
   fi
 
-  if ! py "$REPO_ROOT/lib/render_prompt.py" headless_addendum.md \
-      "EXISTING_TAGS=${tags:-（まだ無い）}" "ALLOWED_COMMANDS=$ALLOWED_COMMANDS" \
-      >"$RECORD_DIR/prompt.md" 2>>"$RUN_LOG"; then
-    ERROR_MESSAGE="指示文を組み立てられなかった（詳細: ${RUN_LOG}）"
+  # 標準出力は prompt.md へ，標準エラー（失敗の理由）は err へ
+  if ! err="$(py "$REPO_ROOT/lib/render_prompt.py" headless_addendum.md "$target" \
+      "ALLOWED_COMMANDS=$ALLOWED_COMMANDS" 2>&1 >"$RECORD_DIR/prompt.md")"; then
+    ERROR_MESSAGE="$(printf '%s' "$err" | tail -n 1)"
     return 1
   fi
-  printf '\n\n---\n\n# 今回の対象\n\n%s\n%s\n' "$target" "$aux_section" >>"$RECORD_DIR/prompt.md"
-
   log_msg "prompt.md を作成した（$(wc -c <"$RECORD_DIR/prompt.md" | tr -d ' ') バイト）"
 }
 
