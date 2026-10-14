@@ -97,7 +97,7 @@ launchd/install.sh install     # 解除は uninstall，確認は status
 bin/ref paper.pdf                    # PDF を1本
 bin/ref https://arxiv.org/abs/...    # Webページ・GitHubリポジトリ等
 bin/ref --resume <run_id>            # 失敗した実行を止まったところから続ける（「失敗したとき」）
-bin/ref --chat-prompt [URL]          # Claude のチャット用の指示文をクリップボードへ（下記）
+bin/ref --chat-prompt                # Claude のチャット用の指示文をクリップボードへ（下記）
 ```
 
 同じ文献を補助する資料を添えられる．ファイル・フォルダ・URL を混ぜてよい．
@@ -121,11 +121,11 @@ bin/ref a.pdf b.pdf      # エラー
 Claude のデスクトップアプリ（またはWeb）のチャットで登録したいときは，指示文を作って貼る．
 
 ```sh
-bin/ref --chat-prompt                       # PDF を添付する場合
-bin/ref --chat-prompt https://arxiv.org/... # URL を対象にする場合
+bin/ref --chat-prompt
 ```
 
-指示文がクリップボードにコピーされるので，チャットに貼り付け，PDF を添付して送る．
+指示文がクリップボードにコピーされるので，チャットに貼り付け，PDF を添付するか URL を書いて送る．
+指示文は対象に依存しないので，同じものを毎回使ってよい．
 **Notion コネクタを有効にしておく．** チャットの Claude が Notion コネクタで自らページを作る．
 2つ目以降の添付は補助資料として扱われる．
 
