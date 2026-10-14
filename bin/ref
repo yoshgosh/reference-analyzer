@@ -5,6 +5,8 @@
 #   ref <対象> --with <補助資料...>   同じ文献を補助する資料を添えて処理する
 #   ref --resume <run_id>             失敗した実行を，AI を再実行せずに止まったステップから続ける
 #                                     （解析が済んでいる場合のみ．登録・改名・移動を行う）
+#   ref --chat-prompt [URL]           Claude のチャットに貼る指示文を作り，クリップボードへコピーする
+#                                     （チャットの Claude が Notion コネクタで登録する．AI はここでは動かない）
 #
 # 1コマンド = 1文献 = AI プロセス1回 = Notion 1ページ．
 # 補助資料はファイル・フォルダ・URL を混在できる．フォルダは展開せず，
@@ -21,7 +23,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$REPO_ROOT/lib/core.sh"
 
 usage() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -190,9 +192,56 @@ print(" ".join(k for k, v in steps.items() if v == "completed"))
   exit 1
 }
 
+# ---------------------------------------------------------------- チャット用の指示文
+
+# 共通の指示文（registration.md）にチャット用の追加ルール（chat_addendum.md）をつなげ，
+# 既存タグと登録先を埋める．端末に出すときはクリップボードへコピーし，
+# リダイレクトしたときはそのまま書き出す．
+chat_prompt() {  # [URL]
+  local tags text target
+  if ! tags="$(py "$REPO_ROOT/lib/notion.py" tags)"; then
+    echo "Notion のデータベースを確認できなかった（launchd/install.sh status で確かめる）" >&2
+    exit 1
+  fi
+  if [ -n "${1:-}" ]; then
+    target="$(printf '%s\n' "- 種別: URL（Webページ・GitHubリポジトリ等）" "- URL: $1" "" "このURLの資料のみを処理せよ．")"
+  else
+    target="$(printf '%s\n' \
+      "- このメッセージに最初に添付したファイルを対象とする．" \
+      "- 2つ目以降の添付は，同じ文献の補助資料である．")"
+  fi
+  text="$(py "$REPO_ROOT/lib/render_prompt.py" chat_addendum.md \
+    "EXISTING_TAGS=${tags:-（まだ無い）}" "NOTION_DATA_SOURCE_ID=$NOTION_DATA_SOURCE_ID")" || exit 1
+  text="$(printf '%s\n\n---\n\n# 今回の対象\n\n%s\n' "$text" "$target")"
+
+  if [ -t 1 ]; then
+    printf '%s' "$text" | pbcopy
+    echo "指示文をクリップボードへコピーした（$(printf '%s' "$text" | wc -m | tr -d ' ') 文字）．" >&2
+    if [ -n "${1:-}" ]; then
+      echo "Claude のチャットに貼り付けて送る．Notion コネクタを有効にしておく．" >&2
+    else
+      echo "Claude のチャットに貼り付け，対象の PDF を添付して送る．Notion コネクタを有効にしておく．" >&2
+    fi
+  else
+    printf '%s\n' "$text"
+  fi
+  exit 0
+}
+
 # ---------------------------------------------------------------- 引数
 
 TARGET="$1"; shift
+
+CHAT_PROMPT=""
+if [ "$TARGET" = "--chat-prompt" ]; then
+  if [ "$#" -gt 1 ]; then
+    echo "使い方: ref --chat-prompt [URL]" >&2
+    exit 2
+  fi
+  CHAT_PROMPT=1
+  CHAT_URL="${1:-}"
+  [ "$#" -gt 0 ] && shift
+fi
 
 RESUME_RUN_ID=""
 if [ "$TARGET" = "--resume" ]; then
@@ -234,6 +283,7 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT
 
+[ -n "$CHAT_PROMPT" ] && chat_prompt "$CHAT_URL"
 [ -n "$RESUME_RUN_ID" ] && resume_run "$RESUME_RUN_ID"
 
 # ---------------------------------------------------------------- 対象の判別

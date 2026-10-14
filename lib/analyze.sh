@@ -61,17 +61,13 @@ build_prompt() {
       "$AUX_DESC")"
   fi
 
-  py -c '
-import sys
-repo, tags, commands, target, aux, out = sys.argv[1:7]
-parts = [open(f"{repo}/prompts/{name}", encoding="utf-8").read()
-         for name in ("registration.md", "headless_addendum.md")]
-text = "\n\n---\n\n".join(parts)
-text = text.replace("{{EXISTING_TAGS}}", tags or "（まだ無い）")
-text = text.replace("{{ALLOWED_COMMANDS}}", commands)
-text += f"\n\n---\n\n# 今回の対象\n\n{target}\n{aux}\n"
-open(out, "w", encoding="utf-8").write(text)
-' "$REPO_ROOT" "$tags" "$ALLOWED_COMMANDS" "$target" "$aux_section" "$RECORD_DIR/prompt.md"
+  if ! py "$REPO_ROOT/lib/render_prompt.py" headless_addendum.md \
+      "EXISTING_TAGS=${tags:-（まだ無い）}" "ALLOWED_COMMANDS=$ALLOWED_COMMANDS" \
+      >"$RECORD_DIR/prompt.md" 2>>"$RUN_LOG"; then
+    ERROR_MESSAGE="指示文を組み立てられなかった（詳細: ${RUN_LOG}）"
+    return 1
+  fi
+  printf '\n\n---\n\n# 今回の対象\n\n%s\n%s\n' "$target" "$aux_section" >>"$RECORD_DIR/prompt.md"
 
   log_msg "prompt.md を作成した（$(wc -c <"$RECORD_DIR/prompt.md" | tr -d ' ') バイト）"
 }

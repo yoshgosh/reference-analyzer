@@ -54,8 +54,10 @@ run_one()
   launchd/install.sh      launchd エージェントの導入・解除・状態確認
 
 指示文・設定
-  prompts/registration.md       書誌項目・要約の指示（何を作るか）
-  prompts/headless_addendum.md  無人実行用の追加ルール（混入防止・コマンド制約・JSON出力）
+  prompts/registration.md       共通の指示（何を作るか．対象の限定・補助資料・Web検索の照合も）
+  prompts/headless_addendum.md  無人実行用の追加ルール（コマンド制約・画像の取得・JSON出力）
+  prompts/chat_addendum.md      チャット用の追加ルール（Notion コネクタでの登録手順・画像の入れ方）
+  lib/render_prompt.py          共通の指示と追加ルールをつなげ，プレースホルダーを埋める
   schema/result.schema.json     AI の最終出力スキーマ
 ```
 
@@ -413,16 +415,41 @@ launchd から起動したスクリプトは `~/Documents`・`~/Desktop`・`~/Do
 
 ## AI の入出力
 
-### 2つの指示文
+### 指示文の構成
+
+指示文は「共通」＋「追加ルール」の2つをつなげて作る（`lib/render_prompt.py`）．追加ルールは
+使い方ごとに1つある．
 
 | ファイル | 役割 |
 |---|---|
-| `prompts/registration.md` | **何を作るか**．書誌項目の定義，Citation Key の規則，タグ，要約の必須トピック |
-| `prompts/headless_addendum.md` | **無人実行での追加・変更**．対象の限定，補助資料，Web検索の扱い，コマンドの制約，代表画像の取得手順，最終出力 |
+| `prompts/registration.md` | **何を作るか**．書誌項目の定義，Citation Key の規則，タグ，要約の必須トピック，対象の限定，補助資料の扱い，Web検索で得た情報の照合 |
+| `prompts/headless_addendum.md` | **無人実行（`claude -p`）**．質問しない，コマンドの制約，代表画像の取得手順，JSON の最終出力 |
+| `prompts/chat_addendum.md` | **チャット（`ref --chat-prompt`）**．Notion コネクタでの登録手順，タグの追加方法，代表画像の入れ方，最後の報告 |
 
-**同じ指示を両方に書かない．** 一方から他方を参照する場合は節番号で指す（例：「§6 に定める」）．
+**共通に書くのは，どちらの使い方でも正しい指示だけである．** 登録の方法・出力の形式・使える道具は
+追加ルールに書く．共通からは「追加ルールに定める」とだけ書き，追加ルールの節番号は指さない
+（追加ルールが2つあるため）．追加ルールの中では自分の節番号を指してよい．
 
-`{{EXISTING_TAGS}}`（Notion から取得した既存タグ）と `{{ALLOWED_COMMANDS}}` は `build_prompt` が置換する．
+| プレースホルダー | 埋めるもの | 使う側 |
+|---|---|---|
+| `{{EXISTING_TAGS}}` | Notion から取得した既存タグ | 共通 |
+| `{{ALLOWED_COMMANDS}}` | 許可したコマンド（`ALLOWED_COMMANDS`） | ヘッドレス |
+| `{{NOTION_DATA_SOURCE_ID}}` | 登録先のデータソースID | チャット |
+
+埋め残しがあれば `render_prompt.py` が失敗する（AI に `{{…}}` を見せない）．
+
+### チャット用の指示文
+
+チャットの Claude は Notion コネクタで自ら登録する．ヘッドレスでスクリプトへ移した手順
+（タグの追加，ページの作成，画像の挿入）を，チャットでは指示文に書く必要がある．
+コネクタでのタグの追加（`SET MULTI_SELECT` が全置換であること）と，選択肢の文字列を推測しない
+こと（異体字セレクタで 400 になる）は，以前ヘッドレスが MCP で登録していたときに実測で
+確かめた内容である．
+
+代表画像は，公開 URL があれば `notion-create-attachment` の `source_url` で入れる（確実）．
+PDF から切り出した画像は `notion-create-file-upload` の受け付け先へコード実行から送る必要があり，
+デスクトップのコード実行環境からそこへ送れるかは未検証である．送れなければユーザーに委ね，
+未完了として報告させる．
 
 ### 最終出力
 

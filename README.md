@@ -97,6 +97,7 @@ launchd/install.sh install     # 解除は uninstall，確認は status
 bin/ref paper.pdf                    # PDF を1本
 bin/ref https://arxiv.org/abs/...    # Webページ・GitHubリポジトリ等
 bin/ref --resume <run_id>            # 失敗した実行を止まったところから続ける（「失敗したとき」）
+bin/ref --chat-prompt [URL]          # Claude のチャット用の指示文をクリップボードへ（下記）
 ```
 
 同じ文献を補助する資料を添えられる．ファイル・フォルダ・URL を混ぜてよい．
@@ -114,6 +115,26 @@ bin/ref paper.pdf --with supp/ https://github.com/owner/repo
 ```sh
 bin/ref a.pdf b.pdf      # エラー
 ```
+
+### チャットで登録する
+
+Claude のデスクトップアプリ（またはWeb）のチャットで登録したいときは，指示文を作って貼る．
+
+```sh
+bin/ref --chat-prompt                       # PDF を添付する場合
+bin/ref --chat-prompt https://arxiv.org/... # URL を対象にする場合
+```
+
+指示文がクリップボードにコピーされるので，チャットに貼り付け，PDF を添付して送る．
+**Notion コネクタを有効にしておく．** チャットの Claude が Notion コネクタで自らページを作る．
+2つ目以降の添付は補助資料として扱われる．
+
+ヘッドレス（`bin/ref`・自動）との違い：
+
+- 改名・Slack 通知・実行記録は無い．Claude が最後に報告する Citation Key で，PDF は手で改名する
+- 代表画像は，公開されている元画像（arXiv の HTML 版など）があればそれを入れる．PDF から
+  切り出す必要がある場合は入れられないことがあり，そのときは Claude が図を示すので手で貼る
+- コネクタのツール定義を毎回読み込むので，ヘッドレスより利用量が多い
 
 ### 自動
 
